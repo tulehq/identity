@@ -14,11 +14,26 @@
 // v0.1.0 client sends it, is answered as v0.1.0 answered it: the principal's
 // account, ARN and access key ID. A request with Version 2 is also told
 // whether the principal is its account's root user and the identity
-// policies in effect for it. A request with Version 3 or later is also told
-// the values of the principal's condition keys: aws:PrincipalArn,
-// aws:userid, aws:PrincipalType and aws:PrincipalTag. The response carries
-// the Version it was answered at, so a client can tell an identity too old
-// to report what it needs.
+// policies in effect for it. A request with Version 3 is also told the
+// values of the principal's condition keys: aws:PrincipalArn, aws:userid,
+// aws:PrincipalType and aws:PrincipalTag. A request with Version 4 or later
+// is also told its organization keys, aws:PrincipalOrgID and
+// aws:PrincipalOrgPaths. The response carries the Version it was answered
+// at, so a client can tell an identity too old to report what it needs.
+//
+// # Organization keys
+//
+// At Version 4 a principal whose account is an ACTIVE member of the
+// organization the accounts service reports, or its management account,
+// carries the organization's ID and the account's path; any other principal
+// carries neither, as AWS includes the keys "only if the principal is a
+// member of an organization" (the IAM User Guide, AWS global condition
+// context keys). Identity keeps an account's keys for a short time (see its
+// README), so a change to the organization reaches a principal's keys
+// within that time. When identity cannot ask the accounts service, it
+// reports the keys unknown, OrgUnknown, rather than absent or the call
+// failed: a service must then supply them to its policy evaluator as
+// unknown, so that a condition on them fails closed.
 //
 // # A session whose role no longer exists
 //
@@ -39,9 +54,11 @@ package keysource
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"net/http"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -68,8 +85,11 @@ const (
 	// VersionAttributes is the first to report its PrincipalArn, UserId,
 	// PrincipalType and Tags.
 	VersionAttributes = 3
+	// VersionOrganization is the first to report its OrgId, OrgPaths and
+	// OrgUnknown.
+	VersionOrganization = 4
 	// Version is the version this client asks for.
-	Version = VersionAttributes
+	Version = VersionOrganization
 )
 
 // Request is the body of a call: the scope of the credential a request was
@@ -111,6 +131,14 @@ func (r *Request) Scope() sigv4.Scope {
 // User, AssumedRole or Account. Tags are the aws:PrincipalTag values: an
 // IAM user's tags, or a role session's role's, at most MaxTags of them, and
 // absent when there are none.
+//
+// OrgID, OrgPaths and OrgUnknown are only reported at VersionOrganization
+// or later. OrgID is aws:PrincipalOrgID, o-..., and OrgPaths is
+// aws:PrincipalOrgPaths, the account's one path, such as
+// o-a1b2c3d4e5/r-ab12/ou-ab12-11111111/, for a principal of an ACTIVE
+// member account or of the management account; both are absent for any
+// other principal. OrgUnknown reports that identity could not ask the
+// accounts service, and both are then absent.
 type Principal struct {
 	Tags          map[string]string `json:"Tags,omitempty"`
 	AccountID     string            `json:"AccountId"`
@@ -119,8 +147,11 @@ type Principal struct {
 	UserID        string            `json:"UserId,omitempty"`
 	AccessKeyID   string            `json:"AccessKeyId"`
 	PrincipalType string            `json:"PrincipalType,omitempty"`
+	OrgID         string            `json:"OrgId,omitempty"`
+	OrgPaths      []string          `json:"OrgPaths,omitempty"`
 	Policies      []json.RawMessage `json:"Policies,omitempty"`
 	Root          bool              `json:"Root,omitempty"`
+	OrgUnknown    bool              `json:"OrgUnknown,omitempty"`
 }
 
 // Response is the body of a successful call. SigningKey is the derived key
@@ -202,7 +233,8 @@ func New(cfg Config) (*Client, error) {
 }
 
 // SigningKey asks identity for the signing key of scope, with the
-// principal's Root, Policies and condition key values. It returns sigv4.ErrUnknownAccessKey,
+// principal's Root, Policies, condition key values and organization keys.
+// It returns sigv4.ErrUnknownAccessKey,
 // ErrInactiveAccessKey (which wraps it), sigv4.ErrInvalidSessionToken or
 // sigv4.ErrExpiredSessionToken when identity has no key for the scope, and
 // an *Error or a transport error otherwise, an identity that answers below
@@ -236,7 +268,7 @@ func (c *Client) SigningKey(ctx context.Context, scope sigv4.Scope) (sigv4.Key, 
 		return sigv4.Key{}, &Error{
 			Status: status, Code: CodeVersionUnsupported,
 			Message: fmt.Sprintf("the endpoint answered at version %d, which reports no "+
-				"principal attributes; this client needs version %d or later",
+				"organization keys; this client needs version %d or later",
 				out.Version, Version),
 		}
 	}
@@ -255,6 +287,9 @@ func (c *Client) SigningKey(ctx context.Context, scope sigv4.Scope) (sigv4.Key, 
 			UserID:       out.Principal.UserID,
 			AccessKeyID:  out.Principal.AccessKeyID,
 			Type:         sigv4.PrincipalType(out.Principal.PrincipalType),
+			OrgID:        out.Principal.OrgID,
+			OrgPaths:     out.Principal.OrgPaths,
+			OrgUnknown:   out.Principal.OrgUnknown,
 			Policies:     out.Principal.Policies,
 			Root:         out.Principal.Root,
 		},
@@ -271,10 +306,11 @@ const CodeVersionUnsupported = "VersionUnsupported"
 const CodeInvalidResponse = "InvalidResponse"
 
 // checkPrincipal checks what the endpoint must uphold of a principal at
-// VersionAttributes, so that a verifier never hands a policy evaluator one
+// VersionOrganization, so that a verifier never hands a policy evaluator one
 // that breaks it: its PrincipalType is Account, User or AssumedRole; it is
-// Root exactly when it is an Account; it has at most MaxTags tags; and no
-// two of its tag keys are equal regardless of case, by strings.EqualFold.
+// Root exactly when it is an Account; it has at most MaxTags tags; no two
+// of its tag keys are equal regardless of case, by strings.EqualFold; and
+// its organization keys are as checkOrganization requires.
 func checkPrincipal(p *Principal) error {
 	switch sigv4.PrincipalType(p.PrincipalType) {
 	case sigv4.PrincipalTypeAccount, sigv4.PrincipalTypeUser, sigv4.PrincipalTypeAssumedRole:
@@ -297,6 +333,45 @@ func checkPrincipal(p *Principal) error {
 				return fmt.Errorf("the tag keys %q and %q are equal regardless of case", k, o)
 			}
 		}
+	}
+	return checkOrganization(p)
+}
+
+// The forms of an organization ID, o- and 10 to 32 lower-case letters or
+// digits, and of a path: the organization ID, a root ID (r- and 4 to 32),
+// and any OU IDs (ou-, 4 to 32, a dash, and 8 to 32), each followed by a
+// slash (the Organizations API Reference, Organization, Root and ListParents;
+// the IAM User Guide, aws:PrincipalOrgPaths).
+var (
+	orgIDForm   = regexp.MustCompile(`^o-[a-z0-9]{10,32}$`)
+	orgPathForm = regexp.MustCompile(
+		`^(o-[a-z0-9]{10,32})/r-[0-9a-z]{4,32}/(?:ou-[0-9a-z]{4,32}-[a-z0-9]{8,32}/)*$`)
+)
+
+// checkOrganization checks the principal's organization keys: none when
+// OrgUnknown is set or OrgId is absent, and otherwise an organization ID
+// and exactly one path in that organization. An account has one parent ("a
+// child can have only a single parent", ListParents), so one path.
+func checkOrganization(p *Principal) error {
+	if p.OrgID == "" {
+		switch {
+		case p.OrgUnknown && len(p.OrgPaths) > 0:
+			return errors.New("the organization keys are unknown, yet reported")
+		case len(p.OrgPaths) > 0:
+			return errors.New("organization paths without an organization ID")
+		}
+		return nil
+	}
+	switch {
+	case p.OrgUnknown:
+		return errors.New("the organization keys are unknown, yet reported")
+	case !orgIDForm.MatchString(p.OrgID):
+		return fmt.Errorf("the OrgId %q is not an organization ID", p.OrgID)
+	case len(p.OrgPaths) != 1:
+		return fmt.Errorf("%d organization paths, want one", len(p.OrgPaths))
+	}
+	if m := orgPathForm.FindStringSubmatch(p.OrgPaths[0]); m == nil || m[1] != p.OrgID {
+		return fmt.Errorf("the OrgPaths value %q is not a path in %s", p.OrgPaths[0], p.OrgID)
 	}
 	return nil
 }

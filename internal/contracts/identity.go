@@ -443,6 +443,19 @@ type IdentityProvider interface {
 	PrincipalARNs(ctx context.Context, ids []string) (map[string]string, error)
 }
 
+// Organization is where an account sits in the organization: the values
+// of aws:PrincipalOrgID and aws:PrincipalOrgPaths for its principals. The
+// zero value is an account outside the organization, whose principals have
+// neither key.
+type Organization struct {
+	// ID is the organization's ID, o-xxxxxxxxxx.
+	ID string
+	// Path is the account's path, the organization ID, the root ID and the
+	// IDs of the organizational units down to the account's parent, each
+	// followed by a slash: o-a1b2c3d4e5/r-ab12/ou-ab12-11111111/.
+	Path string
+}
+
 // AccountDirectory tells which account manages the organization and whether
 // an account is an active member of it.
 type AccountDirectory interface {
@@ -456,4 +469,11 @@ type AccountDirectory interface {
 	// account that is not a member, and ErrNoAccountDirectory when there is
 	// no accounts service to ask.
 	IsActiveMember(ctx context.Context, accountID string) (bool, error)
+
+	// OrganizationOf returns where accountID sits in the organization: the
+	// organization's ID and the account's path, for an ACTIVE member or the
+	// management account, and the zero Organization for any other account
+	// or when there is no organization. It returns ErrNoAccountDirectory
+	// when there is no accounts service to ask.
+	OrganizationOf(ctx context.Context, accountID string) (Organization, error)
 }

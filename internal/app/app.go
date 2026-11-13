@@ -19,6 +19,7 @@ import (
 	"tule.dev/identity/internal/modules/query"
 	serviceroles "tule.dev/identity/internal/modules/servicerole"
 	"tule.dev/identity/internal/modules/signingkey"
+	"tule.dev/identity/internal/orgkeys"
 	"tule.dev/identity/internal/services/identity/sqlimpl"
 	"tule.dev/identity/internal/services/organization/sdkimpl"
 )
@@ -55,11 +56,13 @@ func newApp(cfg *Config, now func() time.Time, extra ...gas.Option) (*gas.App, e
 			SecretAccessKey: cfg.Auth.SecretAccessKey,
 			AccountID:       cfg.Identity.AccountID,
 		}, now))
-	app.RegisterServiceInstance[contracts.AccountDirectory](sdkimpl.New(sdkimpl.Settings{
+	accounts := sdkimpl.New(sdkimpl.Settings{
 		Endpoint:        cfg.Identity.AccountsEndpoint,
 		AccessKeyID:     cfg.Auth.AccessKeyID,
 		SecretAccessKey: cfg.Auth.SecretAccessKey,
-	}))
+	})
+	app.RegisterServiceInstance[contracts.AccountDirectory](accounts)
+	app.RegisterServiceInstance[*orgkeys.Cache](orgkeys.New(accounts, now))
 	registerAppModules(app)
 	app.ReadyFunc(reportStoredTrust)
 	if err := installMiddleware(app.Router(), cfg, logger); err != nil {
