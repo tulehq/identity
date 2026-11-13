@@ -12,8 +12,9 @@ import (
 )
 
 // orgKeysFixture is an identity server over an accounts service whose
-// organization has a member account in an OU, a member account under the
-// root, and a session of an account since removed from the organization.
+// organization has a member account in an OU, one in an OU nested in that
+// OU, one under the root, and sessions of an account since removed from the
+// organization and of one since closed.
 // The organization is set up before identity first asks about any account,
 // so no organization key is cached before the test looks.
 type orgKeysFixture struct {
@@ -21,9 +22,12 @@ type orgKeysFixture struct {
 	orgID   string
 	rootID  string
 	ouID    string
+	innerID string
 	inOU    string
+	nested  string
 	atRoot  string
 	removed aws.Credentials
+	closed  aws.Credentials
 }
 
 func newOrgKeysFixture(t *testing.T) orgKeysFixture {
@@ -40,6 +44,7 @@ func newOrgKeysFixture(t *testing.T) orgKeysFixture {
 		rootID: aws.ToString(roots.Roots[0].Id),
 		inOU:   createOrgAccount(t, oc, "InOU", "in-ou@example.com"),
 		atRoot: createOrgAccount(t, oc, "AtRoot", "at-root@example.com"),
+		nested: createOrgAccount(t, oc, "Nested", "nested@example.com"),
 	}
 	ou, err := oc.CreateOrganizationalUnit(t.Context(), &awsorg.CreateOrganizationalUnitInput{
 		ParentId: aws.String(f.rootID), Name: aws.String("Workloads"),
@@ -50,7 +55,17 @@ func newOrgKeysFixture(t *testing.T) orgKeysFixture {
 		AccountId: aws.String(f.inOU), SourceParentId: aws.String(f.rootID),
 		DestinationParentId: aws.String(f.ouID),
 	})), "move the account into the OU")
+	inner, err := oc.CreateOrganizationalUnit(t.Context(), &awsorg.CreateOrganizationalUnitInput{
+		ParentId: aws.String(f.ouID), Name: aws.String("Team"),
+	})
+	requireNoErr(t, err, "create the nested OU")
+	f.innerID = aws.ToString(inner.OrganizationalUnit.Id)
+	requireNoErr(t, errOf(oc.MoveAccount(t.Context(), &awsorg.MoveAccountInput{
+		AccountId: aws.String(f.nested), SourceParentId: aws.String(f.rootID),
+		DestinationParentId: aws.String(f.innerID),
+	})), "move the account into the nested OU")
 	removed := createOrgAccount(t, oc, "Removed", "removed@example.com")
+	closed := createOrgAccount(t, oc, "Closed", "closed@example.com")
 
 	f.srv = startServer(t, map[string]string{"TULE_Identity_AccountsEndpoint": url})
 	// A session of the account, taken while it is a member: the account is
@@ -59,6 +74,11 @@ func newOrgKeysFixture(t *testing.T) orgKeysFixture {
 	requireNoErr(t, errOf(oc.RemoveAccountFromOrganization(t.Context(),
 		&awsorg.RemoveAccountFromOrganizationInput{AccountId: aws.String(removed)})),
 		"remove the account from the organization")
+	// Likewise a session of an account closed after it was taken.
+	f.closed = sessionCreds(assume(t, f.srv, closed, "closing", nil))
+	requireNoErr(t, errOf(oc.CloseAccount(t.Context(), &awsorg.CloseAccountInput{
+		AccountId: aws.String(closed),
+	})), "close the account")
 	return f
 }
 
@@ -89,6 +109,11 @@ func TestTheKeySourceReportsTheOrganizationKeys(t *testing.T) {
 		sess := sessionCreds(assume(t, f.srv, f.inOU, "in-ou", nil))
 		requireOrgKeys(t, verifiedPrincipal(t, f.srv, sess), f.orgID, rootPath+f.ouID+"/")
 	})
+	t.Run("a member account in a nested OU", func(t *testing.T) {
+		sess := sessionCreds(assume(t, f.srv, f.nested, "nested", nil))
+		requireOrgKeys(t, verifiedPrincipal(t, f.srv, sess), f.orgID,
+			rootPath+f.ouID+"/"+f.innerID+"/")
+	})
 	t.Run("a member account under the root", func(t *testing.T) {
 		sess := sessionCreds(assume(t, f.srv, f.atRoot, "at-root", nil))
 		requireOrgKeys(t, verifiedPrincipal(t, f.srv, sess), f.orgID, rootPath)
@@ -101,6 +126,11 @@ func TestTheKeySourceReportsTheOrganizationKeys(t *testing.T) {
 	})
 	t.Run("an account removed from the organization", func(t *testing.T) {
 		requireOrgKeys(t, verifiedPrincipal(t, f.srv, f.removed), "", "")
+	})
+	// A closed account is no ACTIVE member: its principals have neither
+	// key. Its session still authenticates until it expires.
+	t.Run("a closed account", func(t *testing.T) {
+		requireOrgKeys(t, verifiedPrincipal(t, f.srv, f.closed), "", "")
 	})
 }
 
