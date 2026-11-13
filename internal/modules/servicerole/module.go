@@ -145,7 +145,28 @@ func checkRequest(req *servicerole.Request) (int, *refusal) {
 		return 0, invalid("ServicePrincipal " + strconv.Quote(req.ServicePrincipal) +
 			" is not a service principal such as lambda.amazonaws.com.")
 	}
-	switch d := req.DurationSeconds; {
+	if r := checkSource(req); r != nil {
+		return 0, r
+	}
+	return checkDuration(req.DurationSeconds)
+}
+
+// checkSource checks the optional SourceArn and SourceAccount.
+func checkSource(req *servicerole.Request) *refusal {
+	if req.SourceArn != "" && !servicerole.IsSourceArn(req.SourceArn) {
+		return invalid("SourceArn " + strconv.Quote(req.SourceArn) + " is not an ARN.")
+	}
+	if req.SourceAccount != "" && !servicerole.IsAccountID(req.SourceAccount) {
+		return invalid("SourceAccount " + strconv.Quote(req.SourceAccount) +
+			" is not a 12-digit account ID.")
+	}
+	return nil
+}
+
+// checkDuration returns the session duration DurationSeconds asks for, an
+// hour for 0.
+func checkDuration(d int) (int, *refusal) {
+	switch {
 	case d == 0:
 		return contracts.DefaultSessionDuration, nil
 	case d < contracts.MinSessionDuration || d > contracts.MaxSessionDuration:
@@ -188,6 +209,13 @@ func (m *Module) trustedRole(ctx gas.Context, req *servicerole.Request) (*contra
 		"sts:RoleSessionName": {req.RoleSessionName},
 		"aws:CurrentTime":     {now.Format(time.RFC3339)},
 		"aws:EpochTime":       {strconv.FormatInt(now.Unix(), 10)},
+	}
+	// The resource the service acts for, as a service supplies it.
+	if req.SourceArn != "" {
+		keys["aws:SourceArn"] = []string{req.SourceArn}
+	}
+	if req.SourceAccount != "" {
+		keys["aws:SourceAccount"] = []string{req.SourceAccount}
 	}
 	if policy.TrustMatch(trust, role.AccountID, "sts:AssumeRole", req.ServicePrincipal,
 		keys).Decision != policy.Allow {
