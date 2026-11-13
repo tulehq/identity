@@ -98,7 +98,7 @@ func createRoleInput(c *call) (in contracts.CreateRoleInput, err error) {
 		contracts.RoleMaxSessionDuration); err != nil {
 		return in, err
 	}
-	if in.Tags, _, err = queryapi.Tags(c.params, "Tags"); err != nil {
+	if in.Tags, _, err = c.requestTags(); err != nil {
 		return in, err
 	}
 	// A permissions boundary is refused rather than answered as though it
