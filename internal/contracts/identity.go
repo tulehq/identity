@@ -396,6 +396,10 @@ type IdentityProvider interface {
 	// without regard to case, with its tags.
 	GetRole(ctx context.Context, accountID, name string) (*Role, error)
 	ListRoles(ctx context.Context, in ListRolesInput) (*Page[Role], error)
+	// AllRoles returns every role of every account, with its trust policy
+	// as stored, in order of account and name, without its trust bindings
+	// or tags.
+	AllRoles(ctx context.Context) ([]Role, error)
 	UpdateRole(ctx context.Context, in UpdateRoleInput) error
 	// UpdateAssumeRolePolicy replaces the role's trust policy, binding the
 	// user and role ARNs it names, principals, to their unique IDs.

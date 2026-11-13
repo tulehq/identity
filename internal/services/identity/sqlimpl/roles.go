@@ -224,6 +224,25 @@ func (s *Service) ListRoles(
 	return out, err
 }
 
+// AllRoles returns every role of every account, in order of account and
+// name, without trust bindings or tags.
+func (s *Service) AllRoles(ctx context.Context) ([]contracts.Role, error) {
+	var out []contracts.Role
+	err := s.inTx(ctx, func(tx *sql.Tx) error {
+		rows, err := queryAll(ctx, tx, scanRole,
+			`SELECT `+roleColumns+` ORDER BY account_id, name COLLATE NOCASE`)
+		if err != nil {
+			return err
+		}
+		out = make([]contracts.Role, len(rows))
+		for i := range rows {
+			out[i] = rows[i].item
+		}
+		return nil
+	})
+	return out, err
+}
+
 // UpdateRole sets the role's description and maximum session duration, each
 // when the input sets it.
 func (s *Service) UpdateRole(ctx context.Context, in contracts.UpdateRoleInput) error {
