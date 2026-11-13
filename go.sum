@@ -131,5 +131,5 @@ modernc.org/token v1.1.0 h1:Xl7Ap9dKaEs5kLoOQeQmPWevfnk/DM5qcLcYlA8ys6Y=
 modernc.org/token v1.1.0/go.mod h1:UGzOrNV1mAFSEB63lOFHIpNRUVMvYTc6yu1SMY/XTDM=
 tule.dev/policy v0.1.0 h1:wNJA9dCeb+OBjRQ1oYlmWVjQWQnuNyWZEhRBwPCytJw=
 tule.dev/policy v0.1.0/go.mod h1:9n/2mV3DbM+8I5MiH8cm/w6GapejeFX6jPYiDH++eOg=
-tule.dev/sigv4 v0.3.0 h1:l1R8uO2Q9b9ygZoslNwDD3Fd4nceMGyFLksxKT+E5cY=
-tule.dev/sigv4 v0.3.0/go.mod h1:cyR3a41sjaH9yy97kZHLj8wCdlr89/76l6sO1n5yweo=
+tule.dev/sigv4 v0.4.0 h1:yQwHxDm/d/jVtHNQ5on6orwDtU16hZdGpt7wbRGAEMc=
+tule.dev/sigv4 v0.4.0/go.mod h1:cyR3a41sjaH9yy97kZHLj8wCdlr89/76l6sO1n5yweo=

@@ -18,7 +18,7 @@ require (
 	github.com/rs/zerolog v1.35.1
 	modernc.org/sqlite v1.62.0
 	tule.dev/policy v0.1.0
-	tule.dev/sigv4 v0.3.0
+	tule.dev/sigv4 v0.4.0
 )
 
 require (
