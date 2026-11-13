@@ -25,7 +25,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
+	"slices"
+	"strings"
 
 	"tule.dev/sigv4"
 
@@ -221,6 +224,12 @@ func (c *Client) SigningKey(ctx context.Context, scope sigv4.Scope) (sigv4.Key, 
 				out.Version, Version),
 		}
 	}
+	if err = checkPrincipal(&out.Principal); err != nil {
+		return sigv4.Key{}, &Error{
+			Status: status, Code: CodeInvalidResponse,
+			Message: "the endpoint answered with an invalid principal: " + err.Error(),
+		}
+	}
 	return sigv4.Key{
 		Principal: sigv4.Principal{
 			Tags:         out.Principal.Tags,
@@ -240,6 +249,41 @@ func (c *Client) SigningKey(ctx context.Context, scope sigv4.Scope) (sigv4.Key, 
 // CodeVersionUnsupported is the Code of the *Error SigningKey returns for an
 // identity that answers below Version.
 const CodeVersionUnsupported = "VersionUnsupported"
+
+// CodeInvalidResponse is the Code of the *Error SigningKey returns for an
+// answer whose principal breaks the endpoint's contract; see checkPrincipal.
+const CodeInvalidResponse = "InvalidResponse"
+
+// checkPrincipal checks what the endpoint must uphold of a principal at
+// VersionAttributes, so that a verifier never hands a policy evaluator one
+// that breaks it: its PrincipalType is Account, User or AssumedRole; it is
+// Root exactly when it is an Account; it has at most MaxTags tags; and no
+// two of its tag keys are equal regardless of case, by strings.EqualFold.
+func checkPrincipal(p *Principal) error {
+	switch sigv4.PrincipalType(p.PrincipalType) {
+	case sigv4.PrincipalTypeAccount, sigv4.PrincipalTypeUser, sigv4.PrincipalTypeAssumedRole:
+	default:
+		return fmt.Errorf("the PrincipalType %q is none of Account, User and AssumedRole",
+			p.PrincipalType)
+	}
+	if isAccount := sigv4.PrincipalType(
+		p.PrincipalType,
+	) == sigv4.PrincipalTypeAccount; p.Root != isAccount {
+		return fmt.Errorf("a principal of type %s has Root %t", p.PrincipalType, p.Root)
+	}
+	if len(p.Tags) > MaxTags {
+		return fmt.Errorf("%d tags, more than %d", len(p.Tags), MaxTags)
+	}
+	keys := slices.Sorted(maps.Keys(p.Tags))
+	for i, k := range keys {
+		for _, o := range keys[i+1:] {
+			if strings.EqualFold(k, o) {
+				return fmt.Errorf("the tag keys %q and %q are equal regardless of case", k, o)
+			}
+		}
+	}
+	return nil
+}
 
 // The bounds of a principal's policies on the wire, from the IAM quotas
 // (the IAM User Guide, IAM and STS quotas) and the IAM model. Each document
