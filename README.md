@@ -12,7 +12,9 @@ identity's [signing-key endpoint](#the-signing-key-endpoint) for the SigV4
 signing key of a request's credential and checks the signature itself, so a
 key created here works against every Tule service. A service assumes a role
 as an AWS service, such as a function's execution role, through the
-[assume-role endpoint](#the-assume-role-endpoint).
+[assume-role endpoint](#the-assume-role-endpoint), and binds the principals
+of the resource-based policies it stores to unique IDs, as AWS does,
+through the [principal-ID endpoint](#the-principal-id-endpoint).
 
 It is not a production identity service: secrets are stored as they are, and
 only identity-based policies and role trust policies are evaluated
@@ -249,6 +251,15 @@ supplied are `aws:PrincipalArn`, `aws:PrincipalAccount`, `aws:PrincipalType`,
 `aws:PrincipalTag/<key>`, plus `iam:PolicyARN` for the attach and detach
 operations, `sts:RoleSessionName` for `AssumeRole`, and the tag keys below;
 they fill policy variables such as `${aws:username}` too.
+`aws:PrincipalOrgID` and `aws:PrincipalOrgPaths` are supplied, to identity
+policies and to the trust policy `AssumeRole` evaluates, as the
+[signing-key endpoint](#the-signing-key-endpoint) reports them: for a
+caller whose account is an `ACTIVE` member of the organization or its
+management account, kept for 30 seconds. When the accounts service cannot
+be asked they are evaluated as unknown, with tule.dev/policy's unknown
+keys, so a condition on them never helps an `Allow` and always lets a
+`Deny` apply, and the failure is logged; a request whose policies do not
+test them is decided as usual.
 `aws:RequestedRegion` is always `us-east-1`, whatever region the credential
 is scoped to: IAM calls are always made to us-east-1, and so are calls to
 the STS global endpoint, as the IAM User Guide documents
@@ -532,8 +543,10 @@ role) is assumed through this endpoint instead. It is
   `sts:AssumeRole`, evaluated as `AssumeRole` evaluates it, with its user and
   role principals bound to their unique IDs, and with `aws:SourceArn` and
   `aws:SourceAccount` from the request, as AWS services supply them, so a
-  trust policy can guard against the confused deputy problem. Identity
-  policies are not
+  trust policy can guard against the confused deputy problem.
+  `aws:PrincipalOrgID` and `aws:PrincipalOrgPaths` are not supplied: a
+  service principal is no member of an organization, so AWS includes
+  neither. Identity policies are not
   evaluated, as a service principal has none. Role names are matched with
   their case. Nothing about the role changes, and
   `OrganizationAccountAccessRole` is never created here.
@@ -784,6 +797,14 @@ them by ARN, so a recreated user or role inherits what its ARN was granted.
   supply the organization keys as unknown for a principal with
   `OrgUnknown`, as [the endpoint's contract](#the-signing-key-endpoint)
   says.
+- **Policy evaluation takes tule.dev/policy v0.3.0,** whose unknown context
+  keys identity uses for `aws:PrincipalOrgID` and `aws:PrincipalOrgPaths`
+  when the accounts service cannot be asked: an identity or trust policy
+  that tests them is decided against the caller then, where v0.4.1 never
+  supplied them and evaluated them as absent. With the accounts service
+  reachable, they now carry the caller's organization, so a condition on
+  them that never held, or a negated one that always did, now follows the
+  organization.
 - **Resource-based policies stored before** a service adopts
   [`principals.Bind`](#the-principals-client) are unbound: they name users
   and roles by ARN, and keep matching by ARN, so a user or role created again

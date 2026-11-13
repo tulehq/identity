@@ -13,6 +13,7 @@ import (
 	"tule.dev/sigv4"
 
 	"tule.dev/identity/internal/contracts"
+	"tule.dev/identity/internal/orgkeys"
 	"tule.dev/identity/internal/queryapi"
 )
 
@@ -23,6 +24,7 @@ type Module struct {
 	router   *gas.Router
 	store    contracts.IdentityProvider
 	accounts contracts.AccountDirectory
+	orgs     *orgkeys.Cache
 	handlers map[*queryapi.Service]map[string]handler
 }
 
@@ -35,6 +37,7 @@ type call struct {
 	svc        *queryapi.Service
 	tags       *tagsParam
 	tagKeys    *tagKeysParam
+	org        *orgkeys.Keys
 	op         string
 	signer     sigv4.Principal
 	authorized bool
@@ -79,14 +82,15 @@ func (c *call) requestTagKeys() ([]string, error) {
 type handler func(gas.Context, *call) error
 
 // NewModule returns a Module serving from store, asking accounts about the
-// accounts AssumeRole targets. It registers its route when the app
-// initializes it.
+// accounts AssumeRole targets, and orgs for the callers' organization keys.
+// It registers its route when the app initializes it.
 func NewModule(
 	router *gas.Router,
 	store contracts.IdentityProvider,
 	accounts contracts.AccountDirectory,
+	orgs *orgkeys.Cache,
 ) *Module {
-	m := &Module{router: router, store: store, accounts: accounts}
+	m := &Module{router: router, store: store, accounts: accounts, orgs: orgs}
 	m.handlers = map[*queryapi.Service]map[string]handler{
 		queryapi.IAM: {
 			"CreateUser":           m.createUser,

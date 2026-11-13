@@ -12,6 +12,7 @@ import (
 	"tule.dev/policy"
 
 	"tule.dev/identity/internal/contracts"
+	"tule.dev/identity/internal/httpx"
 	"tule.dev/identity/internal/queryapi"
 )
 
@@ -335,7 +336,8 @@ func (m *Module) decide(ctx gas.Context, c *call) (decision, error) {
 	if err = m.addTagKeys(ctx, c, resource, keys); err != nil {
 		return decision{}, err
 	}
-	res, err := evaluate(c, op.action, resource, keys)
+	unknown := m.addOrgKeys(ctx, c, keys)
+	res, err := evaluate(c, op.action, resource, keys, unknown)
 	if err != nil {
 		return decision{}, err
 	}
@@ -350,6 +352,7 @@ func evaluate(
 	c *call,
 	action, resource string,
 	keys map[string][]string,
+	unknown []string,
 ) (policy.Decision, error) {
 	policies := make([]*policy.Policy, 0, len(c.signer.Policies))
 	for i, doc := range c.signer.Policies {
@@ -366,6 +369,7 @@ func evaluate(
 		Resource:  resource,
 		Principal: c.caller.ARN,
 		Context:   keys,
+		Unknown:   unknown,
 	}, policies...)
 	return res.Decision, nil
 }
@@ -400,6 +404,37 @@ func globalKeys(ctx gas.Context, c *call) map[string][]string {
 		keys["aws:SourceIp"] = []string{host}
 	}
 	return keys
+}
+
+// orgKeyNames are the organization keys, which are unknown together.
+var orgKeyNames = []string{"aws:PrincipalOrgID", "aws:PrincipalOrgPaths"}
+
+// addOrgKeys adds the caller's organization keys to keys:
+// aws:PrincipalOrgID and aws:PrincipalOrgPaths for a caller whose account
+// is an ACTIVE member of the organization, or its management account, and
+// neither for any other (the IAM User Guide, AWS global condition context
+// keys: "only if the principal is a member of an organization", "also
+// applies to the management account"). When the accounts service cannot be
+// asked, it returns both keys' names, for the evaluation to take as
+// unknown, so that a condition on them fails closed; the failure is logged
+// once for the call.
+func (m *Module) addOrgKeys(ctx gas.Context, c *call, keys map[string][]string) []string {
+	if c.org == nil {
+		k, err := m.orgs.For(ctx, c.caller.AccountID)
+		if err != nil {
+			httpx.Logger(ctx).Warn("the organization keys are unknown").
+				Str("account", c.caller.AccountID).Err("error", err).Send()
+		}
+		c.org = &k
+	}
+	if c.org.Unknown {
+		return orgKeyNames
+	}
+	if c.org.OrgID != "" {
+		keys["aws:PrincipalOrgID"] = []string{c.org.OrgID}
+		keys["aws:PrincipalOrgPaths"] = c.org.Paths
+	}
+	return nil
 }
 
 // requestedRegion is the aws:RequestedRegion of every call, whatever region

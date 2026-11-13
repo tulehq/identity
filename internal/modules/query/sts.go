@@ -307,7 +307,13 @@ func (m *Module) assumableRole(
 		return nil, none, denied
 	}
 	keys := trustKeys(ctx, c)
-	res := policy.TrustMatch(trust, role.AccountID, "sts:AssumeRole", c.caller.ARN, keys)
+	res := policy.EvaluateTrust(trust, policy.TrustRequest{
+		RoleAccount: role.AccountID,
+		Action:      "sts:AssumeRole",
+		Principal:   c.caller.ARN,
+		Context:     keys,
+		Unknown:     m.addOrgKeys(ctx, c, keys),
+	})
 	if res.Decision != policy.Allow {
 		return nil, none, denied
 	}
