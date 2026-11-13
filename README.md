@@ -524,6 +524,95 @@ It returns `servicerole.ErrNoSuchRole`, `ErrNotTrusted` and
 `ErrInvalidDuration` for those refusals, and a `*servicerole.Error` or a
 transport error otherwise.
 
+## The principal-ID endpoint
+
+An internal endpoint, not an AWS API, through which the other Tule services
+bind the IAM user and role ARNs of the resource-based policies they store, such
+as bucket, queue and secret policies, to unique IDs, as AWS does. AWS turns
+a user or role ARN in a policy's `Principal` into the principal's unique ID
+when the policy is saved, so that a user or role deleted and created again
+under the same ARN is another principal, which the policy does not name;
+"the principal ID appears in resource-based policies because AWS can no
+longer map it back to a valid ARN" (the IAM User Guide,
+[AWS JSON policy elements: Principal](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements_principal.html),
+IAM role principals and IAM user principals). Identity does this for its own
+trust policies already; the endpoint does it for everyone else's. It is
+`POST /_internal/principal-ids`.
+
+- **Authentication.** As the signing-key endpoint's: SigV4 with the root
+  user's key, for the signing name `identity` in `us-east-1`. Anything else
+  is refused, `403` with the sigv4 Kind as the code, before the body is read.
+- **Request.** User and role ARNs to resolve to unique IDs, and user and role
+  unique IDs to resolve to ARNs, at most 1,000 of both together
+  (`principals.MaxBatch`):
+
+  ```json
+  {"Arns": ["arn:aws:iam::000000000000:user/dev", "arn:aws:iam::000000000000:role/app/deployer"],
+   "Ids": ["AIDA..."]}
+  ```
+
+  Each ARN is a user's or a role's, `arn:aws:iam::<account>:user<path><name>`
+  or `...:role<path><name>`, and each ID a user's (`AIDA...`) or a role's
+  (`AROA...`), upper-case letters and digits, 16 to 128 characters.
+- **Response.** `200` with the unique ID of each ARN that a user or role has
+  now, its path and name compared with their case, as a `Principal`'s are,
+  and the current ARN of each ID that a user or role has. One that no user
+  or role has is left out:
+
+  ```json
+  {"Ids": {"arn:aws:iam::000000000000:user/dev": "AIDA..."},
+   "Arns": {"AIDA...": "arn:aws:iam::000000000000:user/dev"}}
+  ```
+
+- **Refusals.** `400` `InvalidRequest` for a body that is not a request, more
+  than 1,000 values, or a value that is not a user or role ARN or unique ID.
+  A failure of the store is `500`.
+
+### The principals client
+
+`tule.dev/identity/principals` is the endpoint's client, for a service that
+stores resource-based policies:
+
+```go
+c, err := principals.New(principals.Config{
+	Endpoint:        "http://localhost:9030",
+	AccessKeyID:     rootKeyID,
+	SecretAccessKey: rootSecret,
+})
+stored, err := c.Bind(ctx, doc) // on save, after policy.ParseResource accepted doc
+shown, err := c.Show(ctx, stored) // on Get
+```
+
+- **`Bind`** replaces each user and role ARN in the `AWS` values of the
+  policy's `Principal` and `NotPrincipal` elements with the unique ID of the
+  user or role that has it now. Account IDs, root ARNs, assumed-role and
+  federated-user session ARNs, `*`, unique IDs, service and other principal
+  types, and ARNs in conditions, such as `aws:PrincipalArn`, are kept: AWS
+  documents the conversion for user and role ARNs only, and "AWS does not
+  convert condition key ARNs to IDs". A policy that names an ARN no user or
+  role has is a `*principals.InvalidPrincipalError`, which matches
+  `principals.ErrInvalidPrincipal`; the service answers with its own API's
+  refusal, such as S3's `MalformedPolicy` "Invalid principal in policy".
+  AWS documents the conversion for `Principal`; binding `NotPrincipal`'s
+  values too is this service's choice, so that a recreated user or role is
+  not exempt from a `Deny` that exempted the deleted one.
+- **`Show`** turns each unique ID that a user or role still has back into
+  its current ARN, and leaves one that no user or role has as the ID, as AWS
+  shows it.
+- **Evaluation** uses the stored, bound policy: `tule.dev/policy` matches an
+  `AIDA...` or `AROA...` principal against the caller's `UserID`, so a user
+  or role created again under the same ARN is not granted.
+
+Both keep the document as it was written, statements, `Sid`s and
+conditions in their order, rewriting only the principal values, as identity
+rewrites its trust policies; where an ID replaces an ARN, the white space
+of the object it is in is not kept. A failure of the call is a
+`*principals.Error` or a transport error. The client caches nothing.
+
+A service run without identity (no identity endpoint configured) has no
+principal IDs to bind to: it stores policies as they were sent and matches
+them by ARN, so a recreated user or role inherits what its ARN was granted.
+
 ## Differences from AWS
 
 - **Identity policies and trust policies only.** Permissions boundaries,

@@ -61,7 +61,7 @@ func loadBindings(
 }
 
 // bindPrincipals replaces the role's trust bindings with those of the ARNs,
-// each bound to the unique ID of the user or role that has it now, its path
+// each bound to the unique ID of the IAM user or role that has it now, its path
 // and name compared with their case, as a Principal's are. An ARN no user
 // or role has is a *contracts.InvalidPrincipalError.
 func bindPrincipals(ctx context.Context, tx *sql.Tx, roleID string, arns []string) error {
@@ -82,7 +82,7 @@ func bindPrincipals(ctx context.Context, tx *sql.Tx, roleID string, arns []strin
 	return nil
 }
 
-// resolvePrincipal returns the unique ID of the user or role with the ARN.
+// resolvePrincipal returns the unique ID of the IAM user or role with the ARN.
 func resolvePrincipal(ctx context.Context, tx *sql.Tx, arn string) (string, error) {
 	table := "users"
 	account, path, name, ok := contracts.ParseUserARN(arn)
@@ -103,6 +103,70 @@ func resolvePrincipal(ctx context.Context, tx *sql.Tx, arn string) (string, erro
 		return "", fmt.Errorf("resolve principal: %w", err)
 	}
 	return id, nil
+}
+
+// PrincipalIDs returns the unique ID of the IAM user or role each of the ARNs
+// names, its path and name compared with their case as a Principal's are,
+// keyed by the ARN. An ARN no user or role has is left out.
+func (s *Service) PrincipalIDs(ctx context.Context, arns []string) (map[string]string, error) {
+	out := make(map[string]string, len(arns))
+	err := s.inTx(ctx, func(tx *sql.Tx) error {
+		var invalid *contracts.InvalidPrincipalError
+		for _, arn := range arns {
+			id, err := resolvePrincipal(ctx, tx, arn)
+			switch {
+			case errors.As(err, &invalid):
+			case err != nil:
+				return err
+			default:
+				out[arn] = id
+			}
+		}
+		return nil
+	})
+	return out, err
+}
+
+// PrincipalARNs returns the current ARN of the IAM user or role each of the
+// unique IDs belongs to, keyed by the ID. An ID no user or role has is left
+// out.
+func (s *Service) PrincipalARNs(ctx context.Context, ids []string) (map[string]string, error) {
+	out := make(map[string]string, len(ids))
+	err := s.inTx(ctx, func(tx *sql.Tx) error {
+		for _, id := range ids {
+			arn, ok, err := principalARN(ctx, tx, id)
+			if err != nil {
+				return err
+			}
+			if ok {
+				out[id] = arn
+			}
+		}
+		return nil
+	})
+	return out, err
+}
+
+// principalARN returns the ARN of the IAM user or role with the unique ID, and
+// false when none has it.
+func principalARN(ctx context.Context, tx *sql.Tx, id string) (string, bool, error) {
+	for _, t := range []struct {
+		arn   func(account, path, name string) string
+		table string
+	}{{contracts.UserARN, "users"}, {contracts.RoleARN, "roles"}} {
+		var account, path, name string
+		err := tx.QueryRowContext(ctx,
+			`SELECT account_id, path, name FROM `+t.table+` WHERE id = ?`, id).
+			Scan(&account, &path, &name)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			continue
+		case err != nil:
+			return "", false, fmt.Errorf("resolve principal ID: %w", err)
+		}
+		return t.arn(account, path, name), true, nil
+	}
+	return "", false, nil
 }
 
 // CreateRole creates a role in the account with the tags, failing with
