@@ -29,10 +29,17 @@ const Path = "/_internal/assume-role"
 
 // Request is the body of a call. DurationSeconds is 900 to 43200, and no
 // more than the role's MaxSessionDuration; 0 asks for the default, an hour.
+// SourceArn and SourceAccount, when set, name the resource the service acts
+// for and its account, such as a function and its account, and are supplied
+// to the trust policy as aws:SourceArn and aws:SourceAccount, as AWS
+// services supply them against the confused deputy problem (the IAM User
+// Guide, the confused deputy problem).
 type Request struct {
 	RoleArn          string `json:"RoleArn"`
 	RoleSessionName  string `json:"RoleSessionName"`
 	ServicePrincipal string `json:"ServicePrincipal"`
+	SourceArn        string `json:"SourceArn,omitempty"`
+	SourceAccount    string `json:"SourceAccount,omitempty"`
 	DurationSeconds  int    `json:"DurationSeconds,omitempty"`
 }
 
@@ -113,6 +120,44 @@ func IsServicePrincipal(s string) bool {
 	return len(s) <= maxServicePrincipal && servicePrincipal.MatchString(s)
 }
 
+// sourceARN is the form of an AWS ARN, arn:aws:service:region:account:
+// resource, where region and account may be empty, as in an S3 bucket's,
+// and an account is 12 digits (the IAM User Guide, IAM identifiers, ARNs).
+var sourceARN = regexp.MustCompile(`^arn:aws:[a-z0-9-]+:[a-z0-9-]*:(?:\d{12})?:.+$`)
+
+// The length bounds of an ARN, as IAM's arnType has them.
+const (
+	minARN = 20
+	maxARN = 2048
+)
+
+// IsSourceArn reports whether s has the form of an ARN.
+func IsSourceArn(s string) bool {
+	return len(s) >= minARN && len(s) <= maxARN && sourceARN.MatchString(s)
+}
+
+var accountID = regexp.MustCompile(`^\d{12}$`)
+
+// IsAccountID reports whether s is an AWS account ID, 12 digits.
+func IsAccountID(s string) bool {
+	return accountID.MatchString(s)
+}
+
+// Option sets an optional field of an AssumeServiceRole request.
+type Option func(*Request)
+
+// WithSourceArn supplies arn, the resource the service acts for, as
+// aws:SourceArn.
+func WithSourceArn(arn string) Option {
+	return func(r *Request) { r.SourceArn = arn }
+}
+
+// WithSourceAccount supplies account, the account of the resource the
+// service acts for, as aws:SourceAccount.
+func WithSourceAccount(account string) Option {
+	return func(r *Request) { r.SourceAccount = account }
+}
+
 // Config configures a Client.
 type Config struct {
 	// HTTPClient makes the calls. It defaults to http.DefaultClient.
@@ -146,13 +191,15 @@ const maxResponseSize = 64 << 10
 
 // AssumeServiceRole assumes the role roleARN names as servicePrincipal, for
 // a session named sessionName that lasts duration, a whole number of
-// seconds, or an hour when duration is 0. It returns ErrNoSuchRole,
+// seconds, or an hour when duration is 0, with the options set. It returns
+// ErrNoSuchRole,
 // ErrNotTrusted or ErrInvalidDuration for those refusals, and an *Error or
 // a transport error otherwise.
 func (c *Client) AssumeServiceRole(
 	ctx context.Context,
 	roleARN, sessionName, servicePrincipal string,
 	duration time.Duration,
+	opts ...Option,
 ) (*Session, error) {
 	if duration%time.Second != 0 {
 		return nil, fmt.Errorf(
@@ -161,12 +208,16 @@ func (c *Client) AssumeServiceRole(
 			duration,
 		)
 	}
-	body, err := json.Marshal(Request{
+	req := Request{
 		RoleArn:          roleARN,
 		RoleSessionName:  sessionName,
 		ServicePrincipal: servicePrincipal,
 		DurationSeconds:  int(duration / time.Second),
-	})
+	}
+	for _, o := range opts {
+		o(&req)
+	}
+	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("servicerole: encode the request: %w", err)
 	}

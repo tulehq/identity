@@ -407,16 +407,22 @@ role) is assumed through this endpoint instead. It is
   ```json
   {"RoleArn": "arn:aws:iam::000000000000:role/fn-exec",
    "RoleSessionName": "invocation", "ServicePrincipal": "lambda.amazonaws.com",
-   "DurationSeconds": 900}
+   "SourceArn": "arn:aws:lambda:us-east-1:000000000000:function:fn",
+   "SourceAccount": "000000000000", "DurationSeconds": 900}
   ```
 
   `ServicePrincipal` is a service principal, DNS labels ending in
   `.amazonaws.com`. `RoleSessionName` follows `AssumeRole`'s rules.
   `DurationSeconds` is 900 to 43200 and at most the role's
-  `MaxSessionDuration`, or left out for an hour.
+  `MaxSessionDuration`, or left out for an hour. `SourceArn`, an ARN, and
+  `SourceAccount`, 12 digits, are optional: the resource the service acts
+  for and its account, such as a function's.
 - **Evaluation.** The role's trust policy must allow the service principal
   `sts:AssumeRole`, evaluated as `AssumeRole` evaluates it, with its user and
-  role principals bound to their unique IDs. Identity policies are not
+  role principals bound to their unique IDs, and with `aws:SourceArn` and
+  `aws:SourceAccount` from the request, as AWS services supply them, so a
+  trust policy can guard against the confused deputy problem. Identity
+  policies are not
   evaluated, as a service principal has none. Role names are matched with
   their case. Nothing about the role changes, and
   `OrganizationAccountAccessRole` is never created here.
@@ -446,7 +452,8 @@ c, err := servicerole.New(servicerole.Config{
 	SecretAccessKey: rootSecret,
 })
 s, err := c.AssumeServiceRole(ctx, roleARN, "invocation", "lambda.amazonaws.com",
-	15*time.Minute)
+	15*time.Minute, servicerole.WithSourceArn(functionARN),
+	servicerole.WithSourceAccount(accountID))
 ```
 
 It returns `servicerole.ErrNoSuchRole`, `ErrNotTrusted` and

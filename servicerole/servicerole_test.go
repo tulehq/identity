@@ -310,3 +310,57 @@ func TestAssumingAsAServiceChangesNoRole(t *testing.T) {
 		t.Fatalf("got %v, want %v", err, servicerole.ErrNoSuchRole)
 	}
 }
+
+// conditionedTrust trusts lambda.amazonaws.com when the condition holds.
+func conditionedTrust(operator, key, value string) string {
+	return `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":` +
+		`{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole","Condition":` +
+		`{"` + operator + `":{"` + key + `":"` + value + `"}}}]}`
+}
+
+func TestTheSourceIsSuppliedToTheTrustPolicy(t *testing.T) {
+	ctx := t.Context()
+	url := startIdentity(t)
+	const (
+		fn1 = "arn:aws:lambda:us-east-1:" + account + ":function:one"
+		fn2 = "arn:aws:lambda:us-east-1:" + account + ":function:two"
+	)
+	createRole(t, url, "by-arn", conditionedTrust("ArnEquals", "aws:SourceArn", fn1), 0)
+	createRole(t, url, "by-account",
+		conditionedTrust("StringEquals", "aws:SourceAccount", account), 0)
+	c := client(t, url, rootKeyID, rootSecret)
+
+	for name, tc := range map[string]struct {
+		want error
+		role string
+		opts []servicerole.Option
+	}{
+		"the function's ARN": {nil, "by-arn", []servicerole.Option{servicerole.WithSourceArn(fn1)}},
+		"another function":   {servicerole.ErrNotTrusted, "by-arn", []servicerole.Option{servicerole.WithSourceArn(fn2)}},
+		"no source ARN":      {servicerole.ErrNotTrusted, "by-arn", nil},
+		"the account":        {nil, "by-account", []servicerole.Option{servicerole.WithSourceAccount(account)}},
+		"another account":    {servicerole.ErrNotTrusted, "by-account", []servicerole.Option{servicerole.WithSourceAccount("123456789012")}},
+		"no source account":  {servicerole.ErrNotTrusted, "by-account", nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := c.AssumeServiceRole(ctx, roleARN(tc.role), "s1", lambda, 0, tc.opts...)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("got %v, want %v", err, tc.want)
+			}
+		})
+	}
+
+	for name, opt := range map[string]servicerole.Option{
+		"a source ARN that is no ARN":        servicerole.WithSourceArn("function:one"),
+		"a source account of 11 digits":      servicerole.WithSourceAccount("12345678901"),
+		"a source account that is no number": servicerole.WithSourceAccount("abcdefghijkl"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := c.AssumeServiceRole(ctx, roleARN("by-arn"), "s1", lambda, 0, opt)
+			var e *servicerole.Error
+			if !errors.As(err, &e) || e.Code != servicerole.CodeInvalidRequest {
+				t.Fatalf("got %v, want %s", err, servicerole.CodeInvalidRequest)
+			}
+		})
+	}
+}
