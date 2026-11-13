@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -116,9 +117,14 @@ func TestTheClientHandsOutDerivedKeys(t *testing.T) {
 	if string(got.Signing) != string(want) {
 		t.Fatal("the signing key is not the one the secret derives")
 	}
+	user, err := iamRoot(url).GetUser(t.Context(), &iam.GetUserInput{UserName: aws.String("dev")})
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
 	if !reflect.DeepEqual(got.Principal, sigv4.Principal{
 		AccountID: "000000000000", ARN: "arn:aws:iam::000000000000:user/dev",
-		AccessKeyID: aws.ToString(key.AccessKeyId),
+		PrincipalARN: "arn:aws:iam::000000000000:user/dev", UserID: aws.ToString(user.User.UserId),
+		AccessKeyID: aws.ToString(key.AccessKeyId), Type: sigv4.PrincipalTypeUser,
 	}) {
 		t.Fatalf("principal = %+v", got.Principal)
 	}
@@ -225,11 +231,22 @@ func iamRoot(url string) *iam.Client {
 	})
 }
 
-func TestAnUnversionedRequestIsAnsweredAsV010(t *testing.T) {
-	url := startIdentity(t)
+// versionedAnswer is a signing-key response as JSON, so a test can tell a
+// field the endpoint left out from one it sent empty.
+type versionedAnswer struct {
+	Version   any
+	Principal map[string]any
+}
 
-	// The body a v0.1.0 client sends: no Version.
-	body := `{"AccessKeyId":"` + rootKeyID + `","Date":"20261113","Region":"eu-west-1","Service":"s3"}`
+// askAt posts the scope of the root key to the endpoint at version, 0 for
+// none, as a client of that version sends it, and returns the answer.
+func askAt(t *testing.T, url string, version int) versionedAnswer {
+	t.Helper()
+	body := `{"AccessKeyId":"` + rootKeyID + `","Date":"20261113","Region":"eu-west-1","Service":"s3"`
+	if version > 0 {
+		body += `,"Version":` + strconv.Itoa(version)
+	}
+	body += `}`
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, url+keysource.Path,
 		strings.NewReader(body))
 	if err != nil {
@@ -247,19 +264,57 @@ func TestAnUnversionedRequestIsAnsweredAsV010(t *testing.T) {
 		t.Fatalf("post: %v", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	var out struct {
-		Version   any
-		Principal map[string]any
-	}
+	var out versionedAnswer
 	if err = json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if resp.StatusCode != http.StatusOK || out.Version != nil {
+	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d, body %+v", resp.StatusCode, out)
 	}
+	return out
+}
+
+// attributeFields are the fields version 3 added to the principal.
+var attributeFields = []string{"PrincipalArn", "UserId", "PrincipalType", "Tags"}
+
+func TestAnUnversionedRequestIsAnsweredAsV010(t *testing.T) {
+	out := askAt(t, startIdentity(t), 0)
 	p := out.Principal
-	if p["Arn"] != "arn:aws:iam::000000000000:root" || p["Root"] != nil || p["Policies"] != nil {
-		t.Fatalf("principal = %v, want v0.1.0's fields only", p)
+	if out.Version != nil || p["Arn"] != "arn:aws:iam::000000000000:root" ||
+		p["Root"] != nil || p["Policies"] != nil {
+		t.Fatalf("answer = %+v, want v0.1.0's fields only", out)
+	}
+	for _, f := range attributeFields {
+		if _, ok := p[f]; ok {
+			t.Fatalf("principal = %v, want no %s", p, f)
+		}
+	}
+}
+
+// A client of identity v0.3.0 asks at version 2, and is answered as v0.3.0
+// answered it: with Root and Policies, but none of version 3's fields.
+func TestAVersion2RequestIsAnsweredAtVersion2(t *testing.T) {
+	url := startIdentity(t)
+	out := askAt(t, url, keysource.VersionPolicies)
+	p := out.Principal
+	if out.Version != float64(keysource.VersionPolicies) || p["Root"] != true {
+		t.Fatalf("answer = %+v, want version 2 with Root", out)
+	}
+	for _, f := range attributeFields {
+		if _, ok := p[f]; ok {
+			t.Fatalf("principal = %v, want no %s", p, f)
+		}
+	}
+
+	out = askAt(t, url, keysource.VersionAttributes)
+	if out.Version != float64(keysource.VersionAttributes) ||
+		out.Principal["PrincipalType"] != "Account" {
+		t.Fatalf("answer = %+v, want version 3 with the principal's type", out)
+	}
+	// A client newer than the endpoint is answered at the endpoint's version.
+	if out = askAt(t, url, keysource.VersionAttributes+1); out.Version !=
+		float64(keysource.VersionAttributes) {
+		t.Fatalf("answer = %+v, want version 3", out)
 	}
 }
 
@@ -279,10 +334,26 @@ func TestTheClientRefusesAnEndpointThatReportsNoPolicies(t *testing.T) {
 	}
 }
 
+func TestTheClientRefusesAnEndpointThatReportsNoAttributes(t *testing.T) {
+	// Identity v0.3.0 answers at version 2, with no principal attributes.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"Version":2,"Principal":{"AccountId":"000000000000",` +
+			`"Arn":"arn:aws:iam::000000000000:user/dev","AccessKeyId":"AKIA"},"SigningKey":"AA=="}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	_, err := newClient(t, srv.URL, rootKeyID, rootSecret).SigningKey(t.Context(),
+		scope("AKIAAAAAAAAAAAAAAAAA", ""))
+	var e *keysource.Error
+	if !errors.As(err, &e) || e.Code != keysource.CodeVersionUnsupported {
+		t.Fatalf("got %v, want a %s *keysource.Error", err, keysource.CodeVersionUnsupported)
+	}
+}
+
 func TestTheClientRefusesAResponseOverTheBound(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		pad := strings.Repeat(" ", keysource.MaxResponseSize)
-		_, _ = w.Write([]byte(`{"Version":2,"Principal":{"Arn":"` + pad + `"}}`))
+		_, _ = w.Write([]byte(`{"Version":3,"Principal":{"Arn":"` + pad + `"}}`))
 	}))
 	t.Cleanup(srv.Close)
 
