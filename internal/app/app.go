@@ -15,6 +15,7 @@ import (
 	"tule.dev/identity/internal/contracts"
 	"tule.dev/identity/internal/httpx"
 	"tule.dev/identity/internal/modules/health"
+	"tule.dev/identity/internal/modules/principalids"
 	"tule.dev/identity/internal/modules/query"
 	serviceroles "tule.dev/identity/internal/modules/servicerole"
 	"tule.dev/identity/internal/modules/signingkey"
@@ -103,6 +104,7 @@ func registerAppModules(app *gas.App) {
 	app.RegisterSingletonService[*query.Module](query.NewModule)
 	app.RegisterSingletonService[*signingkey.Module](signingkey.NewModule)
 	app.RegisterSingletonService[*serviceroles.Module](serviceroles.NewModule)
+	app.RegisterSingletonService[*principalids.Module](principalids.NewModule)
 	app.RegisterSingletonService[*health.Module](health.NewModule)
 }
 

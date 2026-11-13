@@ -40,6 +40,24 @@ func TestRewritePrincipalsKeepsTheDocument(t *testing.T) {
 	}
 }
 
+func TestRewritePrincipalsCoversNotPrincipal(t *testing.T) {
+	// A resource-based policy's NotPrincipal names principals as Principal
+	// does; its AWS values are rewritten too.
+	doc := `{"Version":"2012-10-17","Statement":[{"Effect":"Deny",` +
+		`"NotPrincipal":{"AWS":["arn:aws:iam::123456789012:user/a","123456789012"]},` +
+		`"Action":"s3:*","Resource":"*"}]}`
+	got, changed, err := RewritePrincipals(doc, func(v string) string {
+		if v == "arn:aws:iam::123456789012:user/a" {
+			return "AIDAEXAMPLE"
+		}
+		return v
+	})
+	want := strings.Replace(doc, "arn:aws:iam::123456789012:user/a", "AIDAEXAMPLE", 1)
+	if err != nil || !changed || got != want {
+		t.Fatalf("rewrite = %s, %v, %v; want %s", got, changed, err, want)
+	}
+}
+
 func TestBindablePrincipals(t *testing.T) {
 	doc := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":[` +
 		`"arn:aws:iam::123456789012:user/a","123456789012","arn:aws:iam::123456789012:root",` +

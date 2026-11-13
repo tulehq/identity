@@ -388,7 +388,7 @@ type IdentityProvider interface {
 	ListInlinePolicies(ctx context.Context, in ListInlinePoliciesInput) (*Page[string], error)
 	DeleteInlinePolicy(ctx context.Context, e Entity, name string) error
 
-	// CreateRole creates a role, binding the user and role ARNs its trust
+	// CreateRole creates a role, binding the IAM user and role ARNs its trust
 	// policy names to their unique IDs. One that no user or role has is an
 	// *InvalidPrincipalError.
 	CreateRole(ctx context.Context, in CreateRoleInput) (*Role, error)
@@ -432,6 +432,15 @@ type IdentityProvider interface {
 	// Principal returns who an access key belongs to, whatever its status,
 	// or ErrAccessKeyNotFound.
 	Principal(ctx context.Context, keyID string) (*Principal, error)
+
+	// PrincipalIDs returns the unique ID of the IAM user or role each user or
+	// role ARN names, its path and name compared with their case, keyed by
+	// the ARN; an ARN no user or role has is left out.
+	PrincipalIDs(ctx context.Context, arns []string) (map[string]string, error)
+	// PrincipalARNs returns the current ARN of the IAM user or role each unique
+	// ID belongs to, keyed by the ID; an ID no user or role has is left
+	// out.
+	PrincipalARNs(ctx context.Context, ids []string) (map[string]string, error)
 }
 
 // AccountDirectory tells which account manages the organization and whether

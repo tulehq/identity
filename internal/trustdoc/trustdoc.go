@@ -1,7 +1,10 @@
 // Package trustdoc rewrites the principals of a role's trust policy: to bind
 // them to unique IDs as IAM does, and to show them as IAM shows them once a
-// principal is gone. Only the values of Statement[].Principal.AWS change;
-// every other member is kept as it was written, in its order.
+// principal is gone. Only the values of Statement[].Principal.AWS change,
+// and of Statement[].NotPrincipal.AWS, which a trust policy never has but a
+// resource-based policy may (tule.dev/identity/principals rewrites those
+// with RewritePrincipals too); every other member is kept as it was
+// written, in its order.
 package trustdoc
 
 import (
@@ -74,13 +77,13 @@ func marshalString(v any) ([]byte, error) {
 	return bytes.TrimRight(b.Bytes(), "\n"), nil
 }
 
-// RewritePrincipals returns doc with each AWS principal value replaced by
-// fn's answer for it, and whether any changed. doc is a trust policy that
-// parsed.
+// RewritePrincipals returns doc with each AWS principal value, of a
+// Principal or a NotPrincipal, replaced by fn's answer for it, and whether
+// any changed. doc is a trust or resource-based policy that parsed.
 func RewritePrincipals(doc string, fn func(string) string) (string, bool, error) {
 	top, err := decodeObject([]byte(doc))
 	if err != nil {
-		return "", false, fmt.Errorf("trustdoc: read the trust policy: %w", err)
+		return "", false, fmt.Errorf("trustdoc: read the policy: %w", err)
 	}
 	changed := false
 	for i, m := range top {
@@ -131,11 +134,11 @@ func asBytes(list []json.RawMessage) [][]byte {
 func rewriteStatement(raw json.RawMessage, fn func(string) string) (json.RawMessage, bool, error) {
 	st, err := decodeObject(raw)
 	if err != nil {
-		return nil, false, fmt.Errorf("trustdoc: read a trust policy statement: %w", err)
+		return nil, false, fmt.Errorf("trustdoc: read a policy statement: %w", err)
 	}
 	changed := false
 	for i, m := range st {
-		if m.key != "Principal" {
+		if m.key != "Principal" && m.key != "NotPrincipal" {
 			continue
 		}
 		v, c, pErr := rewritePrincipal(m.value, fn)
@@ -159,7 +162,7 @@ func rewritePrincipal(raw json.RawMessage, fn func(string) string) (json.RawMess
 	}
 	byType, err := decodeObject(raw)
 	if err != nil {
-		return nil, false, fmt.Errorf("trustdoc: read a trust policy principal: %w", err)
+		return nil, false, fmt.Errorf("trustdoc: read a policy principal: %w", err)
 	}
 	changed := false
 	for i, t := range byType {

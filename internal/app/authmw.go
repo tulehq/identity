@@ -14,6 +14,7 @@ import (
 	"tule.dev/identity/internal/modules/signingkey"
 	"tule.dev/identity/internal/queryapi"
 	"tule.dev/identity/keysource"
+	"tule.dev/identity/principals"
 	"tule.dev/identity/servicerole"
 )
 
@@ -23,7 +24,7 @@ import (
 // The IAM and STS API is verified against the store, which knows the root
 // user's key, the users' keys and the role sessions'; each verified request
 // records its key's use, for GetAccessKeyLastUsed. The internal endpoints,
-// signing-key and assume-role, are verified against the root user's key
+// signing-key, assume-role and principal-ID, are verified against the root user's key
 // alone, signed for keysource.SigningName, before they read their bodies.
 //
 // The health probes are exempt, so a container's health check needs no
@@ -51,7 +52,7 @@ func verifySignature(auth *authSettings) (func(http.Handler) http.Handler, error
 			switch {
 			case isProbe(r.URL.Path):
 				next.ServeHTTP(w, r)
-			case r.URL.Path == keysource.Path || r.URL.Path == servicerole.Path:
+			case isInternal(r.URL.Path):
 				verified, vErr := internal.Verify(r)
 				if vErr != nil {
 					signingkey.WriteHTTPError(w, r, vErr)
@@ -108,6 +109,12 @@ func serveVerified(
 		}
 	}
 	next.ServeHTTP(w, r.WithContext(queryapi.WithService(r.Context(), svc)))
+}
+
+// isInternal reports whether path is one of the internal endpoints:
+// signing-key, assume-role or principal-ID.
+func isInternal(path string) bool {
+	return path == keysource.Path || path == servicerole.Path || path == principals.Path
 }
 
 func isProbe(path string) bool {

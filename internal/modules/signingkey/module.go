@@ -135,9 +135,9 @@ func writeError(ctx gas.Context, status int, code, msg string) error {
 	return write(ctx, status, keysource.ErrorResponse{Code: code, Message: msg})
 }
 
-// WriteHTTPError answers a call to an internal endpoint, this one or
-// assume-role, that the app's verification refused, with the sigv4 Kind as
-// the code.
+// WriteHTTPError answers a call to an internal endpoint, this one,
+// assume-role or principal-ID, that the app's verification refused, with
+// the sigv4 Kind as the code.
 func WriteHTTPError(w http.ResponseWriter, r *http.Request, err error) {
 	status, code := http.StatusInternalServerError, "InternalFailure"
 	var sigErr *sigv4.Error
