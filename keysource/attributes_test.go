@@ -290,6 +290,7 @@ func TestTheClientReportsTheOrganizationKeys(t *testing.T) {
 		"under the root":       {`,"OrgId":"` + orgID + `","OrgPaths":["` + orgID + `/r-ab12/"]`, sigv4.Principal{OrgID: orgID, OrgPaths: []string{orgID + "/r-ab12/"}}},
 		"in no organization":   {``, sigv4.Principal{}},
 		"organization unknown": {`,"OrgUnknown":true`, sigv4.Principal{OrgUnknown: true}},
+		"an empty path list":   {`,"OrgPaths":[]`, sigv4.Principal{}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, err := newClient(t, answering(t, `,"PrincipalType":"User"`+tc.principal),
@@ -298,6 +299,7 @@ func TestTheClientReportsTheOrganizationKeys(t *testing.T) {
 				t.Fatalf("signing key: %v", err)
 			}
 			p := got.Principal
+			// reflect.DeepEqual tells an empty slice from nil.
 			if p.OrgID != tc.want.OrgID || !reflect.DeepEqual(p.OrgPaths, tc.want.OrgPaths) ||
 				p.OrgUnknown != tc.want.OrgUnknown {
 				t.Fatalf("organization = %q %q %t, want %q %q %t", p.OrgID, p.OrgPaths,
