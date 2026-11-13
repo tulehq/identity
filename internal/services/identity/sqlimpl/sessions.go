@@ -67,11 +67,13 @@ func tokenHash(token string) string {
 }
 
 // keyRecord is what the store knows of an access key: its principal, its
-// secret, and what a request signed with it must satisfy.
+// secret, and what a request signed with it must satisfy. roleID is a role
+// session's role's unique ID.
 type keyRecord struct {
 	secret    string
 	status    string
 	tokenHash string
+	roleID    string
 	principal contracts.Principal
 	expiresAt int64
 }
@@ -135,6 +137,7 @@ func (s *Service) loadKey(ctx context.Context, tx *sql.Tx, keyID string) (*keyRe
 		p.Orphaned = true
 	}
 	p.UserID = roleID + ":" + sessionName
+	k.roleID = roleID
 	k.status = contracts.StatusActive
 	return &k, nil
 }
@@ -157,7 +160,9 @@ func (s *Service) Principal(ctx context.Context, keyID string) (*contracts.Princ
 // SigningKey is the store as a sigv4.KeySource: the signing key for scope of
 // the root user's key, a user's Active key, or a role session's key with its
 // session token, until it expires. Its principal is Root for the root user's
-// key, and carries the identity policies in effect for anyone else.
+// key, and carries the identity policies in effect for anyone else. It also
+// carries the principal's aws:PrincipalArn, aws:userid, aws:PrincipalType
+// and aws:PrincipalTag values; see principalTags for the tags.
 //
 // Everything in scope but the access key ID is unauthenticated when it is
 // called, since the signature is checked after; so a failure reveals no more
@@ -171,13 +176,17 @@ func (s *Service) SigningKey(ctx context.Context, scope sigv4.Scope) (sigv4.Key,
 	var (
 		k    *keyRecord
 		docs []string
+		tags map[string]string
 	)
 	err := s.inTx(ctx, func(tx *sql.Tx) error {
 		var lErr error
 		if k, lErr = s.loadKey(ctx, tx, scope.AccessKeyID); lErr != nil {
 			return lErr
 		}
-		docs, lErr = effectivePolicies(ctx, tx, &k.principal)
+		if docs, lErr = effectivePolicies(ctx, tx, &k.principal); lErr != nil {
+			return lErr
+		}
+		tags, lErr = principalTags(ctx, tx, k)
 		return lErr
 	})
 	switch {
@@ -196,14 +205,58 @@ func (s *Service) SigningKey(ctx context.Context, scope sigv4.Scope) (sigv4.Key,
 	}
 	return sigv4.Key{
 		Principal: sigv4.Principal{
-			AccountID:   p.AccountID,
-			ARN:         p.ARN,
-			AccessKeyID: p.AccessKeyID,
-			Policies:    policies,
-			Root:        p.Kind == contracts.PrincipalRoot,
+			Tags:         tags,
+			AccountID:    p.AccountID,
+			ARN:          p.ARN,
+			PrincipalARN: p.PrincipalARN(),
+			UserID:       p.UserID,
+			AccessKeyID:  p.AccessKeyID,
+			Type:         principalType(p.Kind),
+			Policies:     policies,
+			Root:         p.Kind == contracts.PrincipalRoot,
 		},
 		Signing: sigv4.DeriveSigningKey(k.secret, scope.Date, scope.Region, scope.Service),
 	}, nil
+}
+
+// principalType is the aws:PrincipalType of a principal of the kind (the IAM
+// User Guide, principal key values).
+func principalType(kind contracts.PrincipalKind) sigv4.PrincipalType {
+	switch kind {
+	case contracts.PrincipalRoot:
+		return sigv4.PrincipalTypeAccount
+	case contracts.PrincipalUser:
+		return sigv4.PrincipalTypeUser
+	case contracts.PrincipalRoleSession:
+		return sigv4.PrincipalTypeAssumedRole
+	}
+	panic(fmt.Sprintf("sqlimpl: principal kind %d has no principal type", kind))
+}
+
+// principalTags returns the key's principal's tags, its aws:PrincipalTag
+// values, keyed as they were set: an IAM user's own, and a role session's
+// role's, while the role it was created for exists. A session carries no
+// session tags, which AssumeRole refuses. The root user, and an orphaned
+// session, have none; nil stands for none.
+func principalTags(ctx context.Context, tx *sql.Tx, k *keyRecord) (map[string]string, error) {
+	var (
+		list []contracts.Tag
+		err  error
+	)
+	switch p := &k.principal; {
+	case p.Kind == contracts.PrincipalUser:
+		list, err = tagsOf(ctx, tx, userTags, p.UserID)
+	case p.Kind == contracts.PrincipalRoleSession && !p.Orphaned:
+		list, err = tagsOf(ctx, tx, roleTags, k.roleID)
+	}
+	if err != nil || len(list) == 0 {
+		return nil, err
+	}
+	out := make(map[string]string, len(list))
+	for _, t := range list {
+		out[t.Key] = t.Value
+	}
+	return out, nil
 }
 
 // checkScope checks the session token scope carries against the key's, and
