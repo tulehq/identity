@@ -24,7 +24,7 @@ type Module struct {
 	router   *gas.Router
 	store    contracts.IdentityProvider
 	accounts contracts.AccountDirectory
-	orgs     *orgkeys.Cache
+	orgs     orgkeys.Source
 	handlers map[*queryapi.Service]map[string]handler
 }
 
@@ -88,7 +88,7 @@ func NewModule(
 	router *gas.Router,
 	store contracts.IdentityProvider,
 	accounts contracts.AccountDirectory,
-	orgs *orgkeys.Cache,
+	orgs orgkeys.Source,
 ) *Module {
 	m := &Module{router: router, store: store, accounts: accounts, orgs: orgs}
 	m.handlers = map[*queryapi.Service]map[string]handler{
