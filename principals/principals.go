@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strings"
 
 	"tule.dev/identity/internal/contracts"
 	"tule.dev/identity/internal/rootcall"
@@ -300,27 +301,44 @@ func (c *Client) call(ctx context.Context, req Request) (*Response, error) {
 
 // CodeInvalidResponse is the Code of the *Error for an answer that breaks
 // the endpoint's contract: one that resolves a value the request did not
-// name, an ARN to something that is not a unique ID, or an ID to something
-// that is not a user or role ARN.
+// name, an ARN to something that is not a unique ID, an ID to something
+// that is not a user or role ARN, or a user to a role's ID (AROA) or a role
+// to a user's (AIDA).
 const CodeInvalidResponse = "InvalidResponse"
 
+// idPrefix is the prefix of the unique ID of the IAM user or role arn
+// names: AIDA for a user and AROA for a role (the IAM User Guide, IAM
+// identifiers, unique ID prefixes).
+func idPrefix(arn string) string {
+	if _, _, _, ok := contracts.ParseUserARN(arn); ok {
+		return "AIDA"
+	}
+	return "AROA"
+}
+
 func checkResponse(req *Request, out *Response) error {
-	asked := map[string]bool{}
-	for _, v := range req.ARNs {
-		asked[v] = true
+	if err := checkResolved(req.ARNs, out.IDs, false); err != nil {
+		return err
 	}
-	for arn, id := range out.IDs {
-		if !asked[arn] || !IsUniqueID(id) {
-			return fmt.Errorf("the endpoint resolved %q to %q", arn, id)
+	return checkResolved(req.IDs, out.ARNs, true)
+}
+
+// checkResolved checks that got resolves only values asked names, each an
+// ARN to a unique ID of its kind, or, when byID, a unique ID to an ARN of
+// its kind.
+func checkResolved(asked []string, got map[string]string, byID bool) error {
+	named := make(map[string]bool, len(asked))
+	for _, v := range asked {
+		named[v] = true
+	}
+	for from, to := range got {
+		arn, id := from, to
+		if byID {
+			arn, id = to, from
 		}
-	}
-	asked = map[string]bool{}
-	for _, v := range req.IDs {
-		asked[v] = true
-	}
-	for id, arn := range out.ARNs {
-		if !asked[id] || !IsBindable(arn) {
-			return fmt.Errorf("the endpoint resolved %q to %q", id, arn)
+		if !named[from] || !IsBindable(arn) || !IsUniqueID(id) ||
+			!strings.HasPrefix(id, idPrefix(arn)) {
+			return fmt.Errorf("the endpoint resolved %q to %q", from, to)
 		}
 	}
 	return nil
