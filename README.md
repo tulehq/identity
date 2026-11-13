@@ -638,6 +638,24 @@ transport error otherwise.
   trusted, since nothing is expected in front of this service and the header
   is unsigned.
 
+## Upgrading from v0.4.0
+
+- **Trust policies are parsed with tule.dev/policy v0.2.0,** which refuses
+  an `AWS` principal ARN that has a region or an account that is not 12
+  digits, as an IAM ARN's region "is always kept blank" (IAM identifiers).
+  `CreateRole` and `UpdateAssumeRolePolicy` with such a principal, such as
+  `arn:aws:iam:us-east-1:123456789012:root`, now fail with
+  `MalformedPolicyDocument`, "Invalid principal in policy". v0.4.0 accepted
+  them, and took a root ARN with a region for the account.
+- **A stored trust policy that no longer parses trusts no one.** A role
+  whose trust policy v0.4.0 stored in such a form cannot be assumed:
+  `AssumeRole` answers `AccessDenied` and the assume-role endpoint
+  `NotTrusted`, and each refusal is logged as a warning naming the role.
+  At startup, once the database is migrated, identity logs one warning per
+  such role, naming the role and the parse error. The policies are left as
+  they were stored, and `GetRole` and `ListRoles` show them so; rewrite each
+  with `UpdateAssumeRolePolicy` to make the role assumable again.
+
 ## Upgrading from v0.3.1
 
 - **The signing-key endpoint** answers v0.3.1's and older clients as
