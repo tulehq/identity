@@ -62,7 +62,7 @@ func newApp(cfg *Config, now func() time.Time, extra ...gas.Option) (*gas.App, e
 		SecretAccessKey: cfg.Auth.SecretAccessKey,
 	})
 	app.RegisterServiceInstance[contracts.AccountDirectory](accounts)
-	app.RegisterServiceInstance[*orgkeys.Cache](orgkeys.New(accounts, now))
+	app.RegisterServiceInstance[orgkeys.Source](orgkeys.New(accounts, now))
 	registerAppModules(app)
 	app.ReadyFunc(reportStoredTrust)
 	if err := installMiddleware(app.Router(), cfg, logger); err != nil {

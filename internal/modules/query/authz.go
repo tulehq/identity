@@ -1,6 +1,7 @@
 package query
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -13,6 +14,7 @@ import (
 
 	"tule.dev/identity/internal/contracts"
 	"tule.dev/identity/internal/httpx"
+	"tule.dev/identity/internal/orgkeys"
 	"tule.dev/identity/internal/queryapi"
 )
 
@@ -416,14 +418,15 @@ var orgKeyNames = []string{"aws:PrincipalOrgID", "aws:PrincipalOrgPaths"}
 // keys: "only if the principal is a member of an organization", "also
 // applies to the management account"). When the accounts service cannot be
 // asked, it returns both keys' names, for the evaluation to take as
-// unknown, so that a condition on them fails closed; the failure is logged
-// once for the call.
-func (m *Module) addOrgKeys(ctx gas.Context, c *call, keys map[string][]string) []string {
+// unknown, so that a condition on them fails closed, whatever keys came
+// with the error; the failure is logged once for the call.
+func (m *Module) addOrgKeys(ctx context.Context, c *call, keys map[string][]string) []string {
 	if c.org == nil {
 		k, err := m.orgs.For(ctx, c.caller.AccountID)
 		if err != nil {
 			httpx.Logger(ctx).Warn("the organization keys are unknown").
 				Str("account", c.caller.AccountID).Err("error", err).Send()
+			k = orgkeys.Keys{Unknown: true}
 		}
 		c.org = &k
 	}

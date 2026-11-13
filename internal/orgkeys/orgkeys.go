@@ -48,6 +48,13 @@ type Keys struct {
 	Unknown bool
 }
 
+// Source tells an account's principals' organization keys. For returns an
+// error exactly when it could not tell them; a caller must then take the
+// keys as unknown, whatever Keys it returns.
+type Source interface {
+	For(ctx context.Context, accountID string) (Keys, error)
+}
+
 type entry struct {
 	at   time.Time
 	keys Keys
@@ -63,6 +70,8 @@ type Cache struct {
 	entries map[string]entry
 	mu      sync.Mutex
 }
+
+var _ Source = (*Cache)(nil)
 
 // New returns a Cache over dir, telling the time by now.
 func New(dir contracts.AccountDirectory, now func() time.Time) *Cache {

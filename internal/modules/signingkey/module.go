@@ -36,7 +36,7 @@ const codeInvalidRequest = "InvalidRequest"
 type Module struct {
 	router *gas.Router
 	store  contracts.IdentityProvider
-	orgs   *orgkeys.Cache
+	orgs   orgkeys.Source
 }
 
 // NewModule returns a Module answering from store, with the organization
@@ -44,7 +44,7 @@ type Module struct {
 func NewModule(
 	router *gas.Router,
 	store contracts.IdentityProvider,
-	orgs *orgkeys.Cache,
+	orgs orgkeys.Source,
 ) *Module {
 	return &Module{router: router, store: store, orgs: orgs}
 }
@@ -128,12 +128,14 @@ func (m *Module) answer(ctx gas.Context, version int, key sigv4.Key) keysource.R
 // addOrganization sets the principal's organization keys. When the accounts
 // service cannot be asked, the keys are reported unknown and the failure is
 // logged, rather than the call failed: a condition on them then fails
-// closed, and every other request still verifies.
-func (m *Module) addOrganization(ctx gas.Context, p *keysource.Principal) {
+// closed, and every other request still verifies. An error makes the keys
+// unknown whatever keys came with it.
+func (m *Module) addOrganization(ctx context.Context, p *keysource.Principal) {
 	keys, err := m.orgs.For(ctx, p.AccountID)
 	if err != nil {
 		httpx.Logger(ctx).Warn("the organization keys are unknown").
 			Str("account", p.AccountID).Err("error", err).Send()
+		keys = orgkeys.Keys{Unknown: true}
 	}
 	p.OrgID, p.OrgPaths, p.OrgUnknown = keys.OrgID, keys.Paths, keys.Unknown
 }
