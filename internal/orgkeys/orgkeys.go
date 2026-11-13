@@ -21,15 +21,27 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	"tule.dev/identity/internal/contracts"
 )
 
 // TTL is how long an account's keys are kept once the accounts service has
-// told them. Within it, a change to the organization (an account moved,
-// removed, closed, or the organization deleted) is not seen: a principal
-// keeps the keys it had for at most TTL. A lookup that fails is not kept,
-// so the next request asks again.
+// told them, counted from when the lookup began, so no keys are served more
+// than TTL after the accounts service was asked for them. Within it, a
+// change to the organization (an account moved, removed, closed, or the
+// organization deleted) is not seen: a principal keeps the keys it had for
+// at most TTL.
 const TTL = 30 * time.Second
+
+// UnknownTTL is how long a failed lookup is kept: for that long the
+// account's keys are unknown without asking the accounts service again.
+// Every request of an account whose keys are not kept looks them up, and
+// the signing-key endpoint is asked before a request's signature is
+// checked, so without it anyone holding an access key ID, without its
+// secret, could make identity wait on an unreachable accounts service for
+// every request. A failed lookup is only ever kept as unknown.
+const UnknownTTL = time.Second
 
 // lookupTimeout bounds one lookup, so an accounts service that does not
 // answer delays a request by at most this long before its keys are
@@ -55,19 +67,33 @@ type Source interface {
 	For(ctx context.Context, accountID string) (Keys, error)
 }
 
+// entry is an account's lookup: its keys, or for a failed one its error,
+// and when the lookup began.
 type entry struct {
 	at   time.Time
+	err  error
 	keys Keys
 }
 
-// Cache looks the keys up in an AccountDirectory and keeps them for TTL. It
-// keeps one entry per account it is asked about, and is only asked about
-// the accounts of principals identity holds, so its size is bounded by
-// theirs. It is safe for concurrent use.
+// fresh reports whether e may still be served at now.
+func (e *entry) fresh(now time.Time) bool {
+	ttl := TTL
+	if e.err != nil {
+		ttl = UnknownTTL
+	}
+	return now.Sub(e.at) < ttl
+}
+
+// Cache looks the keys up in an AccountDirectory and keeps them for TTL, or
+// a failed lookup for UnknownTTL. Concurrent lookups of one account are one
+// call to the accounts service. It keeps one entry per account it is asked
+// about, and is only asked about the accounts of principals identity holds,
+// so its size is bounded by theirs. It is safe for concurrent use.
 type Cache struct {
 	dir     contracts.AccountDirectory
 	now     func() time.Time
 	entries map[string]entry
+	group   singleflight.Group
 	mu      sync.Mutex
 }
 
@@ -84,36 +110,59 @@ func New(dir contracts.AccountDirectory, now func() time.Time) *Cache {
 // accounts service configured there is no organization, and the keys are
 // absent, not unknown.
 func (c *Cache) For(ctx context.Context, accountID string) (Keys, error) {
-	c.mu.Lock()
-	e, ok := c.entries[accountID]
-	c.mu.Unlock()
-	if ok && c.now().Sub(e.at) < TTL {
-		return e.keys.clone(), nil
+	if e, ok := c.kept(accountID); ok {
+		return e.result()
 	}
+	// The lookup is shared by every request that waits on it, so it is not
+	// cut short when the request that began it is.
+	v, _, _ := c.group.Do(accountID, func() (any, error) {
+		if e, ok := c.kept(accountID); ok {
+			return e, nil
+		}
+		return c.lookup(context.WithoutCancel(ctx), accountID), nil
+	})
+	e, _ := v.(entry)
+	return e.result()
+}
 
+// kept returns the account's entry while it may be served.
+func (c *Cache) kept(accountID string) (entry, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.entries[accountID]
+	return e, ok && e.fresh(c.now())
+}
+
+// lookup asks the accounts service for the account's keys, and keeps the
+// answer unless a lookup that began later is kept already.
+func (c *Cache) lookup(ctx context.Context, accountID string) entry {
+	e := entry{at: c.now()}
 	ctx, cancel := context.WithTimeout(ctx, lookupTimeout)
 	defer cancel()
 	org, err := c.dir.OrganizationOf(ctx, accountID)
 	switch {
 	case errors.Is(err, contracts.ErrNoAccountDirectory):
-		org = contracts.Organization{}
 	case err != nil:
-		return Keys{Unknown: true}, fmt.Errorf("orgkeys: the organization of %s: %w",
-			accountID, err)
-	}
-	var keys Keys
-	if org.ID != "" {
-		keys = Keys{OrgID: org.ID, Paths: []string{org.Path}}
+		e.err = fmt.Errorf("orgkeys: the organization of %s: %w", accountID, err)
+	case org.ID != "":
+		e.keys = Keys{OrgID: org.ID, Paths: []string{org.Path}}
 	}
 	c.mu.Lock()
-	c.entries[accountID] = entry{at: c.now(), keys: keys}
-	c.mu.Unlock()
-	return keys.clone(), nil
+	defer c.mu.Unlock()
+	if old, ok := c.entries[accountID]; !ok || !old.at.After(e.at) {
+		c.entries[accountID] = e
+	}
+	return e
 }
 
-// clone returns k with its own Paths, so a caller cannot change a cached
-// entry.
-func (k Keys) clone() Keys {
+// result is what For answers from e: unknown keys and the error for a
+// failed lookup, and otherwise a copy of the keys, so a caller cannot
+// change a kept entry.
+func (e *entry) result() (Keys, error) {
+	if e.err != nil {
+		return Keys{Unknown: true}, e.err
+	}
+	k := e.keys
 	k.Paths = slices.Clone(k.Paths)
-	return k
+	return k, nil
 }

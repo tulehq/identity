@@ -410,15 +410,21 @@ uses, since those are all `POST /`.
   `DescribeOrganization`, `DescribeAccount` and `ListParents` up to the
   root, signed with the root user's key.
 
-  **Staleness.** Identity keeps an account's keys for 30 seconds once the
-  accounts service has told them, so an account moved, removed or closed,
-  or an organization deleted, keeps its principals' old keys for up to 30
-  seconds. A lookup that fails is not kept.
+  **Staleness.** Identity keeps an account's keys for 30 seconds, counted
+  from when it began asking the accounts service, so an account moved,
+  removed or closed, or an organization deleted, keeps its principals' old
+  keys for at most 30 seconds. A lookup that began earlier never replaces
+  one that began later. Concurrent requests of one account share one
+  lookup.
 
   **The accounts service unreachable.** When the accounts service cannot be
   asked, within 5 seconds, the call does not fail: the principal is reported
   with `OrgUnknown` and neither key, and the failure is logged as a warning
-  naming the account. A service must then supply `aws:PrincipalOrgID` and
+  naming the account. A failed lookup is kept for 1 second, as unknown and
+  never as known keys, so an unreachable accounts service delays at most
+  one lookup per account per second: the endpoint is asked before the
+  request's signature is checked, so without it any holder of an access key
+  ID could make identity wait on the accounts service for every request. A service must then supply `aws:PrincipalOrgID` and
   `aws:PrincipalOrgPaths` to its policy evaluator as unknown, never as
   absent: an absent key satisfies a negated operator, so a condition such
   as `StringNotEquals` on `aws:PrincipalOrgID` would grant, or let a `Deny`

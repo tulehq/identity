@@ -16,6 +16,7 @@ require (
 	github.com/gasmod/gas/migrate v0.9.0
 	github.com/go-chi/chi/v5 v5.5.1-0.20261018135022-9f8adb1aabaa
 	github.com/rs/zerolog v1.35.1
+	golang.org/x/sync v0.25.0
 	modernc.org/sqlite v1.62.0
 	tule.dev/policy v0.3.0
 	tule.dev/sigv4 v0.5.0
@@ -47,7 +48,6 @@ require (
 	github.com/ncruces/go-strftime v1.1.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	golang.org/x/crypto v0.58.0 // indirect
-	golang.org/x/sync v0.25.0 // indirect
 	golang.org/x/sys v0.50.0 // indirect
 	golang.org/x/text v0.44.0 // indirect
 	modernc.org/libc v1.81.0 // indirect
