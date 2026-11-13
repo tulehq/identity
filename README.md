@@ -206,7 +206,11 @@ characters and a value of 0 to 256, of letters, digits, spaces and
 fails with `LimitExceeded` and sets none; no key or value that begins with
 `aws:`, which is `InvalidInput`. A user's tag keys are not case sensitive but
 keep their case: tagging `env` on a user tagged `Env` replaces that tag, and
-a request that names a key twice is `InvalidInput`.
+a request that names a key twice is `InvalidInput`. Case is folded beyond
+ASCII, by Unicode simple case folding (Go's `strings.EqualFold`), so `Ä` and
+`ä` are one key too. The IAM User Guide says user and role tag keys are not
+case sensitive without saying how non-ASCII letters fold; that rule is this
+service's choice.
 
 ## Principals and permissions
 

@@ -84,26 +84,26 @@ func sortedIndexes[T any](members map[int]T) []int {
 
 // Tags reads a list of tags, field.member.N.Key and field.member.N.Value,
 // and checks each against the model and AWS's tagging rules: no key or value
-// that begins with aws:, and no key twice without regard to case, since a
-// user's tag keys are unique that way. It reports whether the request sets
-// the list.
+// that begins with aws:, and no key twice without regard to case, by
+// strings.EqualFold, since a user's tag keys are unique that way. It reports
+// whether the request sets the list.
 func Tags(p Params, field string) ([]contracts.Tag, bool, error) {
 	members, set, err := listMembers(p, field)
 	if err != nil || !set {
 		return nil, set, err
 	}
 	tags := make([]contracts.Tag, 0, len(members))
-	seen := map[string]bool{}
 	for _, n := range sortedIndexes(members) {
 		t, tErr := tagOf(members[n], fmt.Sprintf("%s.%d.member", memberName(field), n))
 		if tErr != nil {
 			return nil, true, tErr
 		}
-		if seen[strings.ToLower(t.Key)] {
+		if slices.ContainsFunc(tags, func(o contracts.Tag) bool {
+			return strings.EqualFold(o.Key, t.Key)
+		}) {
 			return nil, true, ErrInvalidInput(
 				"Duplicate tag keys found. Tag keys are not case sensitive.")
 		}
-		seen[strings.ToLower(t.Key)] = true
 		tags = append(tags, t)
 	}
 	return tags, true, nil

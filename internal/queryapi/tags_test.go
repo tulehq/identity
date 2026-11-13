@@ -41,6 +41,15 @@ func TestTagsAnswerAsTheModelRules(t *testing.T) {
 		{"bad index", "Tags.member.x.Key=a", CodeValidation, "not a member"},
 		{"too many", fifty.String()[1:], CodeValidation, "less than or equal to 50"},
 		{"reserved", "Tags.member.1.Key=AWS:x&Tags.member.1.Value=v", CodeInvalidInput, "aws:"},
+		{
+			"duplicate", "Tags.member.1.Key=Env&Tags.member.1.Value=1" +
+				"&Tags.member.2.Key=env&Tags.member.2.Value=2", CodeInvalidInput, "Duplicate tag keys",
+		},
+		// Keys are folded beyond ASCII, as strings.EqualFold folds them: Ä is ä.
+		{
+			"duplicate beyond ASCII", "Tags.member.1.Key=%C3%84&Tags.member.1.Value=1" +
+				"&Tags.member.2.Key=%C3%A4&Tags.member.2.Value=2", CodeInvalidInput, "Duplicate tag keys",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
