@@ -332,32 +332,70 @@ uses, since those are all `POST /`.
 
   ```json
   {"AccessKeyId": "AKIA...", "SessionToken": "...", "Date": "20261113",
-   "Region": "us-east-1", "Service": "secretsmanager", "Version": 2}
+   "Region": "us-east-1", "Service": "secretsmanager", "Version": 3}
   ```
 
-  `SessionToken` is left out when the request carries none. `Version` is 2
-  for the v0.2.0 client; a request without it, as the v0.1.0 client sends
-  it, is answered as v0.1.0 answered.
+  `SessionToken` is left out when the request carries none. `Version` is 3
+  for the current client and 2 for the v0.2.0 and v0.3.0 clients, and each
+  is answered at the version it asks for; a request without it, as the
+  v0.1.0 client sends it, is answered as v0.1.0 answered. A request above 3
+  is answered at 3.
 - **Response.** `200` with the derived signing key for that date, region and
   service, base64-encoded, and the principal the key belongs to. It never
   returns a secret. At version 2 the principal also carries `Root`, true for
   the root user's key, which is never evaluated against policies, and
   `Policies`, the identity policy documents in effect for anyone else (inline,
   then the default versions of the attached managed policies; a session's
-  are its role's), and the response carries `Version`:
+  are its role's), and the response carries `Version`.
+
+  At version 3 the principal also carries the values of its condition keys,
+  as AWS gives them (the IAM User Guide:
+  [global condition context keys](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_condition-keys.html),
+  [principal key values](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_variables.html#principaltable)):
+
+  | Field | Condition key | IAM user | Role session | Root user |
+  | --- | --- | --- | --- | --- |
+  | `PrincipalArn` | `aws:PrincipalArn` | its ARN, with its path | its role's ARN, with the role's path | `arn:aws:iam::<account>:root` |
+  | `UserId` | `aws:userid` | its unique ID, `AIDA...` | `<role ID>:<session name>` | the account ID |
+  | `PrincipalType` | `aws:PrincipalType` | `User` | `AssumedRole` | `Account` |
+  | `Tags` | `aws:PrincipalTag/<key>` | its tags | its role's tags | none |
+
+  A role session's `Arn` is its assumed-role ARN, which names the role
+  without its path, so `PrincipalArn` is where its role's ARN is found; a
+  resource-based policy that names the role matches the session through it.
+  Sessions from the [assume-role endpoint](#the-assume-role-endpoint) are
+  role sessions like those from `AssumeRole`. A session whose role is gone
+  has no `PrincipalArn` and no tags. `Tags` is an object of keys to values,
+  left out when there are none; keys keep the case they were set with and
+  are unique regardless of case, as IAM's user and role tags are. A
+  session carries no session tags, since `AssumeRole` refuses them, so its
+  tags are its role's.
 
   ```json
   {"Principal": {"AccountId": "000000000000",
-                 "Arn": "arn:aws:iam::000000000000:user/dev",
-                 "AccessKeyId": "AKIA...",
+                 "Arn": "arn:aws:sts::000000000000:assumed-role/deployer/release-42",
+                 "PrincipalArn": "arn:aws:iam::000000000000:role/app/deployer",
+                 "UserId": "AROA...:release-42",
+                 "PrincipalType": "AssumedRole",
+                 "Tags": {"Project": "pegasus"},
+                 "AccessKeyId": "ASIA...",
                  "Policies": [{"Version": "2012-10-17", "Statement": [...]}]},
    "SigningKey": "...",
-   "Version": 2}
+   "Version": 3}
   ```
 
-  Without `Version` in the request, the response has none of `Root`,
-  `Policies` and `Version`, so a v0.1.0 client keeps working and simply gets
-  no policies.
+  At version 2 the response has none of version 3's fields, and without
+  `Version` in the request it has none of `Root`, `Policies` and `Version`
+  either, so an older client keeps working and gets what it asked for.
+
+  **Size.** A principal has at most 50 tags (`keysource.MaxTags`): IAM's
+  limit on a user's or role's tags (`tagListType`), which a session takes
+  from its role. A key is at most 128 characters and a value 256, so the
+  tags take at most about 113 KiB as JSON, with every character escaped.
+  With the largest set of policies a role can hold, about 24.8 MiB, the
+  response fits the client's 32 MiB bound (`keysource.MaxResponseSize`),
+  which the client checks at compile time; it would also fit the 50 session
+  tags AWS allows besides the role's, were sessions to carry them.
 
 - **Refusals.** `400` with a `Code` of `UnknownAccessKey` (unknown or deleted,
   or a session key without its token), `InactiveAccessKey`,
@@ -387,10 +425,12 @@ It maps the refusals to `sigv4.ErrUnknownAccessKey`,
 verifier answers them as it answers its own; `InactiveAccessKey` becomes
 `keysource.ErrInactiveAccessKey`, which wraps `sigv4.ErrUnknownAccessKey`. Any
 other failure is a `*keysource.Error` or a transport error, which a verifier
-reports as `KindKeyLookupFailed`. It asks for version 2 and fills
-`sigv4.Principal.Root` and `sigv4.Principal.Policies` from the answer; an
-identity that answers below version 2, v0.1.0, is a `*keysource.Error` with
-the code `VersionUnsupported`, since it cannot say what the principal may do.
+reports as `KindKeyLookupFailed`. It asks for version 3 and fills
+`sigv4.Principal.Root` and `Policies`, and `PrincipalARN`, `UserID`, `Type`
+and `Tags`, from the answer; an identity that answers below version 3,
+v0.3.0 or earlier, is a `*keysource.Error` with the code
+`VersionUnsupported`, since it cannot say what condition keys the principal
+has.
 It caches nothing: every verification asks
 identity, so a key deactivated or deleted is refused on the next request.
 
@@ -578,6 +618,18 @@ transport error otherwise.
 - **Logs record the connection's peer address.** `X-Forwarded-For` is not
   trusted, since nothing is expected in front of this service and the header
   is unsigned.
+
+## Upgrading from v0.3.0
+
+- **The signing-key endpoint** answers v0.3.0's and older clients as
+  before. The `keysource` client now asks for version 3, which v0.3.0 does
+  not serve, so a service that takes it needs an identity that does; it
+  fills the `sigv4.Principal` fields `tule.dev/sigv4` v0.4.0 added.
+- **A list member's index must be spelled from 1 in decimal.**
+  `Tags.member.01.Key` and the like, which were read as member 1, are now
+  `ValidationError`.
+- **`aws:RequestedRegion` is always `us-east-1`**, no longer the region the
+  credential is scoped to.
 
 ## Upgrading from v0.1.0
 
