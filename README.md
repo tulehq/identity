@@ -245,6 +245,11 @@ supplied are `aws:PrincipalArn`, `aws:PrincipalAccount`, `aws:PrincipalType`,
 `aws:PrincipalTag/<key>`, plus `iam:PolicyARN` for the attach and detach
 operations, `sts:RoleSessionName` for `AssumeRole`, and the tag keys below;
 they fill policy variables such as `${aws:username}` too.
+`aws:RequestedRegion` is always `us-east-1`, whatever region the credential
+is scoped to: IAM calls are always made to us-east-1, and so are calls to
+the STS global endpoint, as the IAM User Guide documents
+([global condition context keys](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_condition-keys.html#condition-keys-requestedregion),
+[STS Regions and endpoints](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_temp_region-endpoints.html)).
 
 Each principal acts in its own account: users the root user creates are the
 management account's, users a member account's session creates are that

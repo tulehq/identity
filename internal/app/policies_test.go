@@ -395,3 +395,51 @@ func deleteUser(t *testing.T, c *iam.Client, name, keyID string) {
 	_, err = c.DeleteUser(t.Context(), &iam.DeleteUserInput{UserName: aws.String(name)})
 	check(t, err == nil, "delete user %s: %v", name, err)
 }
+
+// euWestOnly allows listing users only in eu-west-1, as a policy that
+// confines a principal to a region does.
+const euWestOnly = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow",` +
+	`"Action":"iam:ListUsers","Resource":"*",` +
+	`"Condition":{"StringEquals":{"aws:RequestedRegion":"eu-west-1"}}}]}`
+
+// usEastOnly allows listing users only in us-east-1.
+const usEastOnly = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow",` +
+	`"Action":"iam:ListUsers","Resource":"*",` +
+	`"Condition":{"StringEquals":{"aws:RequestedRegion":"us-east-1"}}}]}`
+
+// aws:RequestedRegion is us-east-1, where IAM's one endpoint is, whatever
+// region a request's credential is scoped to: the caller does not choose it.
+func TestTheRequestedRegionIsUSEast1(t *testing.T) {
+	url := startApp(t, t.TempDir(), nil)
+	root := iamClient(url, rootCreds())
+	inRegion := func(region string) func(*iam.Options) {
+		return func(o *iam.Options) { o.Region = region }
+	}
+	for name, tc := range map[string]struct {
+		policy, region string
+		allowed        bool
+	}{
+		"eu-west-1 policy, eu-west-1 scope": {euWestOnly, "eu-west-1", false},
+		"eu-west-1 policy, us-east-1 scope": {euWestOnly, "us-east-1", false},
+		"us-east-1 policy, eu-west-1 scope": {usEastOnly, "eu-west-1", true},
+		"us-east-1 policy, us-east-1 scope": {usEastOnly, "us-east-1", true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			user := strings.NewReplacer(" ", "", ",", "-").Replace(name)
+			key := createUserWithKey(t, root, user)
+			_, err := root.PutUserPolicy(ctx, &iam.PutUserPolicyInput{
+				UserName: aws.String(user), PolicyName: aws.String("region"),
+				PolicyDocument: aws.String(tc.policy),
+			})
+			check(t, err == nil, "put the policy: %v", err)
+			_, err = iamClient(url, key).ListUsers(ctx, &iam.ListUsersInput{},
+				inRegion(tc.region))
+			if tc.allowed {
+				check(t, err == nil, "list users: %v", err)
+			} else {
+				requireCode(t, err, "AccessDenied")
+			}
+		})
+	}
+}

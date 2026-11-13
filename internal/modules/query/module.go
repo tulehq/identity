@@ -28,14 +28,12 @@ type Module struct {
 
 // call is one request to an operation: its parameters, who signed it, as
 // the store knows the principal and as the verifier reports it with its
-// policies, and the region it was signed for. authorized is set once the
-// call is authorized.
+// policies. authorized is set once the call is authorized.
 type call struct {
 	params     queryapi.Params
 	caller     *contracts.Principal
 	svc        *queryapi.Service
 	op         string
-	region     string
 	signer     sigv4.Principal
 	authorized bool
 }
@@ -162,8 +160,7 @@ func (m *Module) dispatch(ctx gas.Context) error {
 	return nil
 }
 
-// identify sets who signed the call's request, and the region it was signed
-// for. The signature has verified, so the key is one the store knows; a key
+// identify sets who signed the call's request. The signature has verified, so the key is one the store knows; a key
 // deleted since is refused as AWS refuses an unknown one.
 func (m *Module) identify(ctx gas.Context, c *call) error {
 	rctx := ctx.Request().Context()
@@ -178,9 +175,6 @@ func (m *Module) identify(ctx gas.Context, c *call) error {
 	}
 	if err != nil {
 		return err
-	}
-	if scope, ok := sigv4.ScopeFrom(rctx); ok {
-		c.region = scope.Region
 	}
 	c.caller, c.signer = caller, p
 	return nil

@@ -381,6 +381,7 @@ func globalKeys(ctx gas.Context, c *call) map[string][]string {
 		"aws:CurrentTime":      {now.Format(time.RFC3339)},
 		"aws:EpochTime":        {strconv.FormatInt(now.Unix(), 10)},
 		"aws:SecureTransport":  {strconv.FormatBool(r.TLS != nil)},
+		"aws:RequestedRegion":  {requestedRegion},
 	}
 	if arn := c.caller.PrincipalARN(); arn != "" {
 		keys["aws:PrincipalArn"] = []string{arn}
@@ -397,11 +398,17 @@ func globalKeys(ctx gas.Context, c *call) map[string][]string {
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		keys["aws:SourceIp"] = []string{host}
 	}
-	if c.region != "" {
-		keys["aws:RequestedRegion"] = []string{c.region}
-	}
 	return keys
 }
+
+// requestedRegion is the aws:RequestedRegion of every call, whatever region
+// its credential is scoped to: IAM has one endpoint, in us-east-1, so "IAM
+// calls are always made to the us-east-1 Region" (the IAM User Guide, AWS
+// global condition context keys), and requests to the STS global endpoint
+// "have a value of us-east-1 for the aws:RequestedRegion condition key"
+// (the IAM User Guide, AWS STS Regions and endpoints). Identity serves both
+// from one endpoint, as IAM's and the STS global endpoint.
+const requestedRegion = "us-east-1"
 
 // addTagKeys adds the tag condition keys the reference lists for the
 // resource types and the caller: aws:ResourceTag/<key> for a user, role or
