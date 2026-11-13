@@ -434,7 +434,10 @@ reports as `KindKeyLookupFailed`. It asks for version 3 and fills
 and `Tags`, from the answer; an identity that answers below version 3,
 v0.3.0 or earlier, is a `*keysource.Error` with the code
 `VersionUnsupported`, since it cannot say what condition keys the principal
-has.
+has. It also refuses, with the code `InvalidResponse`, a principal that
+breaks the contract: a `PrincipalType` other than `Account`, `User` and
+`AssumedRole`, `Root` set other than exactly for an `Account`, more than 50
+tags, or two tag keys equal regardless of case.
 It caches nothing: every verification asks
 identity, so a key deactivated or deleted is refused on the next request.
 

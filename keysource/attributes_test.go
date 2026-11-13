@@ -1,7 +1,12 @@
 package keysource_test
 
 import (
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -198,4 +203,57 @@ func TestTheClientReportsAServiceRoleSessionsAttributes(t *testing.T) {
 		Type:         sigv4.PrincipalTypeAssumedRole,
 		Tags:         map[string]string{"function": "resize"},
 	})
+}
+
+// answering serves a version 3 answer whose principal is principal, JSON
+// for its fields besides AccountId, Arn and AccessKeyId.
+func answering(t *testing.T, principal string) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"Version":3,"SigningKey":"AA==","Principal":{` +
+			`"AccountId":"000000000000","Arn":"arn:aws:iam::000000000000:user/dev",` +
+			`"AccessKeyId":"AKIAAAAAAAAAAAAAAAAA"` + principal + `}}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+// tagsJSON is a JSON object of n tags, k0 to k<n-1>.
+func tagsJSON(n int) string {
+	tags := make([]string, 0, n)
+	for i := range n {
+		tags = append(tags, fmt.Sprintf(`"k%d":"v"`, i))
+	}
+	return "{" + strings.Join(tags, ",") + "}"
+}
+
+// The client refuses a principal that breaks the endpoint's contract,
+// rather than hand a verifier one a policy evaluator would misread.
+func TestTheClientRefusesAnInvalidPrincipal(t *testing.T) {
+	for name, principal := range map[string]string{
+		"unknown type":       `,"PrincipalType":"Admin"`,
+		"no type":            ``,
+		"a root user":        `,"PrincipalType":"User","Root":true`,
+		"an account no root": `,"PrincipalType":"Account"`,
+		"too many tags":      `,"PrincipalType":"User","Tags":` + tagsJSON(keysource.MaxTags+1),
+		"keys in two cases":  `,"PrincipalType":"User","Tags":{"Env":"1","env":"2"}`,
+		"keys folded":        `,"PrincipalType":"User","Tags":{"Ä":"1","ä":"2"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := newClient(t, answering(t, principal), rootKeyID, rootSecret).SigningKey(
+				t.Context(), scope("AKIAAAAAAAAAAAAAAAAA", ""))
+			var e *keysource.Error
+			if !errors.As(err, &e) || e.Code != keysource.CodeInvalidResponse {
+				t.Fatalf("got %v, want a %s *keysource.Error", err, keysource.CodeInvalidResponse)
+			}
+		})
+	}
+
+	// At the limit, with keys distinct regardless of case, it is accepted.
+	got, err := newClient(t, answering(t, `,"PrincipalType":"User","Tags":`+
+		tagsJSON(keysource.MaxTags)),
+		rootKeyID, rootSecret).SigningKey(t.Context(), scope("AKIAAAAAAAAAAAAAAAAA", ""))
+	if err != nil || len(got.Principal.Tags) != keysource.MaxTags {
+		t.Fatalf("50 tags: %d tags, %v", len(got.Principal.Tags), err)
+	}
 }
