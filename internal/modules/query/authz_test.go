@@ -12,7 +12,7 @@ import (
 )
 
 func TestEveryRoutedOperationHasAnAuthorizationEntry(t *testing.T) {
-	m := NewModule(nil, nil, nil)
+	m := NewModule(nil, nil, nil, nil)
 	for svc, ops := range m.handlers {
 		for op := range ops {
 			entry, ok := operations[svc][op]
@@ -33,7 +33,7 @@ func TestEveryRoutedOperationHasAnAuthorizationEntry(t *testing.T) {
 }
 
 func TestEveryAuthorizationEntryIsRouted(t *testing.T) {
-	m := NewModule(nil, nil, nil)
+	m := NewModule(nil, nil, nil, nil)
 	for svc, ops := range operations {
 		for op, entry := range ops {
 			if _, ok := m.handlers[svc][op]; !ok {
@@ -124,7 +124,7 @@ func TestEvaluateSubstitutesVariables(t *testing.T) {
 		"arn:aws:iam::123456789012:user/alice": policy.Allow,
 		"arn:aws:iam::123456789012:user/bob":   policy.ImplicitDeny,
 	} {
-		got, err := evaluate(c, "iam:ListAccessKeys", resource, keys)
+		got, err := evaluate(c, "iam:ListAccessKeys", resource, keys, nil)
 		if err != nil || got != want {
 			t.Errorf("%s = %s, %v; want %s", resource, got, err, want)
 		}
