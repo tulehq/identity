@@ -10,6 +10,9 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/gasmod/gas"
+	"tule.dev/policy"
+
 	"tule.dev/identity/internal/contracts"
 )
 
@@ -252,6 +255,29 @@ func ForCaller(role *contracts.Role, callerID string) (string, error) {
 		return v
 	})
 	return doc, err
+}
+
+// Parse returns the role's trust policy as ForCaller gives it for callerID,
+// parsed. ok is false when the stored policy no longer parses: one an
+// earlier release stored before tule.dev/policy refused its form, such as
+// a principal ARN with a region. Such a role trusts no one until its policy
+// is rewritten; the refusal is logged to log as a warning naming the role.
+func Parse(role *contracts.Role, callerID string, log gas.Logger) (*policy.Policy, bool, error) {
+	doc, err := ForCaller(role, callerID)
+	if err != nil {
+		return nil, false, err
+	}
+	trust, err := policy.ParseTrust([]byte(doc))
+	var pe *policy.ParseError
+	switch {
+	case errors.As(err, &pe):
+		log.Warn("the stored trust policy of a role no longer parses").
+			Str("role", role.ARN).Err("error", err).Send()
+		return nil, false, nil
+	case err != nil:
+		return nil, false, fmt.Errorf("trustdoc: parse the trust policy of %s: %w", role.ARN, err)
+	}
+	return trust, true, nil
 }
 
 // Shown returns the role's trust policy as GetRole and ListRoles show

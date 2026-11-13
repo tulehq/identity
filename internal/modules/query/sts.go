@@ -290,14 +290,12 @@ func (m *Module) assumableRole(
 		return nil, none, denied
 	}
 
-	doc, err := trustdoc.ForCaller(role, callerID(c.caller))
-	if err != nil {
+	trust, ok, err := trustdoc.Parse(role, callerID(c.caller), httpx.Logger(ctx))
+	switch {
+	case err != nil:
 		return nil, none, err
-	}
-	trust, err := parseDocument(doc, trustDocument)
-	if err != nil {
-		// Every trust policy was parsed when it was stored.
-		return nil, none, fmt.Errorf("query: parse the trust policy of %s: %w", role.ARN, err)
+	case !ok:
+		return nil, none, denied
 	}
 	// The caller is matched by the ARN it signs as alone, a session by its
 	// assumed-role ARN, which names its role; and a user or role ARN in the
