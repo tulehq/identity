@@ -272,6 +272,11 @@ func (c *Client) SigningKey(ctx context.Context, scope sigv4.Scope) (sigv4.Key, 
 				out.Version, Version),
 		}
 	}
+	// An empty list is no path: sigv4.Principal.OrgPaths is nil whenever
+	// OrgID is empty.
+	if len(out.Principal.OrgPaths) == 0 {
+		out.Principal.OrgPaths = nil
+	}
 	if err = checkPrincipal(&out.Principal); err != nil {
 		return sigv4.Key{}, &Error{
 			Status: status, Code: CodeInvalidResponse,
