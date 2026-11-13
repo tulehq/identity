@@ -19,22 +19,14 @@
 package keysource
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"net/http"
-	"net/url"
-	"strings"
-	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"tule.dev/sigv4"
+
+	"tule.dev/identity/internal/rootcall"
 )
 
 // Path is where identity serves the signing-key endpoint. It is under
@@ -43,8 +35,8 @@ const Path = "/_internal/signing-key"
 
 // The SigV4 scope a call to the endpoint is signed for.
 const (
-	SigningName   = "identity"
-	SigningRegion = "us-east-1"
+	SigningName   = rootcall.SigningName
+	SigningRegion = rootcall.SigningRegion
 )
 
 // Version is the endpoint version this client asks for: the first to report
@@ -149,10 +141,7 @@ type Config struct {
 // cache, so a key identity deactivates or deletes is refused on the next
 // request. It is safe for concurrent use.
 type Client struct {
-	http   *http.Client
-	signer *v4.Signer
-	creds  aws.Credentials
-	url    string
+	caller *rootcall.Caller
 }
 
 var _ sigv4.KeySource = (*Client)(nil)
@@ -160,27 +149,11 @@ var _ sigv4.KeySource = (*Client)(nil)
 // New returns a Client for cfg. It fails when the endpoint is not an
 // absolute http or https URL, or the key is not set.
 func New(cfg Config) (*Client, error) {
-	u, err := url.Parse(cfg.Endpoint)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return nil, fmt.Errorf("keysource: the endpoint %q is not an http or https URL",
-			cfg.Endpoint)
+	c, err := rootcall.New(cfg.Endpoint, cfg.AccessKeyID, cfg.SecretAccessKey, cfg.HTTPClient)
+	if err != nil {
+		return nil, fmt.Errorf("keysource: %w", err)
 	}
-	if cfg.AccessKeyID == "" || cfg.SecretAccessKey == "" {
-		return nil, errors.New("keysource: the root user's access key ID and secret are required")
-	}
-	hc := cfg.HTTPClient
-	if hc == nil {
-		hc = http.DefaultClient
-	}
-	return &Client{
-		http:   hc,
-		signer: v4.NewSigner(),
-		creds: aws.Credentials{
-			AccessKeyID:     cfg.AccessKeyID,
-			SecretAccessKey: cfg.SecretAccessKey,
-		},
-		url: strings.TrimSuffix(u.String(), "/") + Path,
-	}, nil
+	return &Client{caller: c}, nil
 }
 
 // SigningKey asks identity for the signing key of scope, with the
@@ -202,32 +175,13 @@ func (c *Client) SigningKey(ctx context.Context, scope sigv4.Scope) (sigv4.Key, 
 	if err != nil {
 		return sigv4.Key{}, fmt.Errorf("keysource: encode the request: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(body))
+	status, raw, err := c.caller.Post(ctx, Path, body, MaxResponseSize)
 	if err != nil {
-		return sigv4.Key{}, fmt.Errorf("keysource: build the request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	sum := sha256.Sum256(body)
-	if err = c.signer.SignHTTP(ctx, c.creds, req, hex.EncodeToString(sum[:]),
-		SigningName, SigningRegion, time.Now()); err != nil {
-		return sigv4.Key{}, fmt.Errorf("keysource: sign the request: %w", err)
+		return sigv4.Key{}, fmt.Errorf("keysource: %w", err)
 	}
 
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return sigv4.Key{}, fmt.Errorf("keysource: call the signing-key endpoint: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, MaxResponseSize+1))
-	if err != nil {
-		return sigv4.Key{}, fmt.Errorf("keysource: read the response: %w", err)
-	}
-	if len(raw) > MaxResponseSize {
-		return sigv4.Key{}, fmt.Errorf("keysource: the response exceeds %d bytes", MaxResponseSize)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return sigv4.Key{}, decodeError(resp.StatusCode, raw)
+	if status != http.StatusOK {
+		return sigv4.Key{}, decodeError(status, raw)
 	}
 	var out Response
 	if err = json.Unmarshal(raw, &out); err != nil {
@@ -235,7 +189,7 @@ func (c *Client) SigningKey(ctx context.Context, scope sigv4.Scope) (sigv4.Key, 
 	}
 	if out.Version < Version {
 		return sigv4.Key{}, &Error{
-			Status: resp.StatusCode, Code: CodeVersionUnsupported,
+			Status: status, Code: CodeVersionUnsupported,
 			Message: fmt.Sprintf("the endpoint answered at version %d, which reports no "+
 				"policies; this client needs version %d or later (identity v0.2.0)",
 				out.Version, Version),
