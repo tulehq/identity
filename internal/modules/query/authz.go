@@ -216,9 +216,10 @@ func policyARNKey(c *call) map[string][]string {
 
 // requestTagKeys supplies aws:RequestTag/<key> and aws:TagKeys from the
 // request's Tags, which the reference lists for CreateUser, TagUser,
-// CreatePolicy and CreateRole. The handler has validated them.
+// CreatePolicy and CreateRole. The handler has validated them, from the
+// same decoding.
 func requestTagKeys(c *call) map[string][]string {
-	tags, _, err := queryapi.Tags(c.params, "Tags")
+	tags, _, err := c.requestTags()
 	if err != nil || len(tags) == 0 {
 		return nil
 	}
@@ -234,7 +235,7 @@ func requestTagKeys(c *call) map[string][]string {
 
 // untagKeys supplies aws:TagKeys from UntagUser's TagKeys.
 func untagKeys(c *call) map[string][]string {
-	names, err := queryapi.TagKeys(c.params, "TagKeys")
+	names, err := c.requestTagKeys()
 	if err != nil || len(names) == 0 {
 		return nil
 	}

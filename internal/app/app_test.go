@@ -411,12 +411,22 @@ func TestAssumeRoleRefusals(t *testing.T) {
 // the response's status and body.
 func signedCall(t *testing.T, url, service, form string) (int, []byte) {
 	t.Helper()
+	return signedCallAs(t, url, service, form, rootCreds())
+}
+
+// signedCallAs is signedCall signed with creds.
+func signedCallAs(
+	t *testing.T,
+	url, service, form string,
+	creds aws.Credentials,
+) (int, []byte) {
+	t.Helper()
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, url+"/",
 		strings.NewReader(form))
 	check(t, err == nil, "new request: %v", err)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	sum := sha256.Sum256([]byte(form))
-	if err = v4.NewSigner().SignHTTP(t.Context(), rootCreds(), req,
+	if err = v4.NewSigner().SignHTTP(t.Context(), creds, req,
 		hex.EncodeToString(sum[:]), service, "us-east-1", time.Now()); err != nil {
 		t.Fatalf("sign: %v", err)
 	}

@@ -83,7 +83,7 @@ func (m *Module) createUser(ctx gas.Context, c *call) error {
 	if path == "" {
 		path = "/"
 	}
-	tags, _, err := queryapi.Tags(c.params, "Tags")
+	tags, _, err := c.requestTags()
 	if err != nil {
 		return err
 	}

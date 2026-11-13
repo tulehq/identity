@@ -20,7 +20,7 @@ func (m *Module) tagUser(ctx gas.Context, c *call) error {
 	if err != nil {
 		return err
 	}
-	tags, set, err := queryapi.Tags(c.params, "Tags")
+	tags, set, err := c.requestTags()
 	if err != nil {
 		return err
 	}
@@ -43,7 +43,7 @@ func (m *Module) untagUser(ctx gas.Context, c *call) error {
 	if err != nil {
 		return err
 	}
-	keys, err := queryapi.TagKeys(c.params, "TagKeys")
+	keys, err := c.requestTagKeys()
 	if err != nil {
 		return err
 	}

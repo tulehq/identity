@@ -62,3 +62,37 @@ func TestTagKeys(t *testing.T) {
 		t.Fatal("a missing TagKeys was accepted")
 	}
 }
+
+// An index has one spelling, an integer from 1 with no sign or leading
+// zero. Read as a number, 01 and +1 would name member 1 too, and the member
+// would take whichever spelling's value was read last, in an order that
+// changes from one read to the next.
+func TestAMemberIndexHasOneSpelling(t *testing.T) {
+	for _, index := range []string{"01", "+1", "0", "-1", "001", "%2B1", "1%20", "0x1"} {
+		t.Run(index, func(t *testing.T) {
+			// Alone, and beside member 1's own spelling, which it would alias.
+			for _, query := range []string{
+				"Tags.member." + index + ".Key=env&Tags.member." + index + ".Value=prod",
+				"Tags.member.1.Key=env&Tags.member.1.Value=dev&Tags.member." + index +
+					".Value=prod",
+			} {
+				_, _, err := Tags(params(query), "Tags")
+				var e *Error
+				if !errors.As(err, &e) || e.Code != CodeValidation ||
+					!strings.Contains(e.Message, "not a member") {
+					t.Fatalf("Tags(%q) = %v, want a %s", query, err, CodeValidation)
+				}
+			}
+			query := "TagKeys.member.1=env&TagKeys.member." + index + "=team"
+			if _, err := TagKeys(params(query), "TagKeys"); err == nil {
+				t.Fatalf("TagKeys(%q) was accepted", query)
+			}
+		})
+	}
+
+	tags, _, err := Tags(params("Tags.member.10.Key=b&Tags.member.10.Value=2&"+
+		"Tags.member.9.Key=a&Tags.member.9.Value=1"), "Tags")
+	if err != nil || fmt.Sprint(tags) != "[{a 1} {b 2}]" {
+		t.Fatalf("multi-digit indexes: tags = %v, err %v", tags, err)
+	}
+}

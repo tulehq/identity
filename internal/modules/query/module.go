@@ -33,9 +33,45 @@ type call struct {
 	params     queryapi.Params
 	caller     *contracts.Principal
 	svc        *queryapi.Service
+	tags       *tagsParam
+	tagKeys    *tagKeysParam
 	op         string
 	signer     sigv4.Principal
 	authorized bool
+}
+
+// tagsParam is the request's Tags as requestTags decoded them.
+type tagsParam struct {
+	err  error
+	tags []contracts.Tag
+	set  bool
+}
+
+// tagKeysParam is the request's TagKeys as requestTagKeys decoded them.
+type tagKeysParam struct {
+	err  error
+	keys []string
+}
+
+// requestTags returns the request's Tags, decoded once for the call: the
+// handler acts on, and the authorization's aws:RequestTag and aws:TagKeys
+// describe, the same tags.
+func (c *call) requestTags() ([]contracts.Tag, bool, error) {
+	if c.tags == nil {
+		tags, set, err := queryapi.Tags(c.params, "Tags")
+		c.tags = &tagsParam{tags: tags, set: set, err: err}
+	}
+	return c.tags.tags, c.tags.set, c.tags.err
+}
+
+// requestTagKeys returns the request's TagKeys, decoded once for the call,
+// as requestTags does Tags.
+func (c *call) requestTagKeys() ([]string, error) {
+	if c.tagKeys == nil {
+		keys, err := queryapi.TagKeys(c.params, "TagKeys")
+		c.tagKeys = &tagKeysParam{keys: keys, err: err}
+	}
+	return c.tagKeys.keys, c.tagKeys.err
 }
 
 // handler serves one operation. Returning an error leaves the response to the

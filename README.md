@@ -506,6 +506,12 @@ transport error otherwise.
   A trust policy that names a principal by its unique ID, as `GetRole` shows
   a deleted one, is refused on `UpdateAssumeRolePolicy` as an invalid
   principal; whether AWS accepts a unique ID there is not verified.
+- **A list member's index has one spelling.** The Query protocol numbers
+  list members from 1 (`Tags.member.1.Key`). An index written any other way,
+  with a leading zero (`01`), a sign (`+1`) or anything but decimal digits,
+  is `ValidationError`, since read as a number it would name a member another
+  parameter names too. AWS documents the numbering but not its answer to
+  such an index.
 - **Some parameters are refused or not acted on.** `CreateUser` and
   `CreateRole` refuse `PermissionsBoundary` with `InvalidInput`, and
   `AssumeRole` refuses `Policy`, `PolicyArns`, `Tags`, `TransitiveTagKeys`

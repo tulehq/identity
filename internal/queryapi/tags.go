@@ -29,11 +29,20 @@ const maxListItems = 50
 // use (the IAM User Guide, tagging IAM resources).
 const reservedTagPrefix = "aws:"
 
+// memberIndex is how the Query protocol spells a list member's index: an
+// integer from 1 (the RDS and EC2 Query API guides: "integers starting from
+// 1"), in decimal with no sign or leading zero. Each index then has one
+// spelling, so no two parameters name the same member.
+var memberIndex = regexp.MustCompile(`^[1-9][0-9]*$`)
+
 // listMembers collects the members of the list parameter field, as the Query
 // protocol sends them: field.member.N, or field.member.N.<name> for a list
 // of structures. It returns the member values by index, each keyed by the
 // part after the index ("" for a list of strings), and whether the request
-// sets the list at all: an empty list is sent as field alone.
+// sets the list at all: an empty list is sent as field alone. An index
+// spelled other than memberIndex allows is refused: read as a number, 01 or
+// +1 would name member 1 as well, and which spelling's value won would
+// depend on the order the parameters are read in.
 func listMembers(p Params, field string) (map[int]map[string]string, bool, error) {
 	members := map[int]map[string]string{}
 	_, set := p.Get(field)
@@ -46,7 +55,7 @@ func listMembers(p Params, field string) (map[int]map[string]string, bool, error
 		set = true
 		index, sub, _ := strings.Cut(rest, ".")
 		n, err := strconv.Atoi(index)
-		if err != nil || n < 1 {
+		if err != nil || !memberIndex.MatchString(index) {
 			return nil, true, ErrValidation(fmt.Sprintf(
 				"%s is not a member of the list %s.", name, field))
 		}
