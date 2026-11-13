@@ -2,8 +2,9 @@
 // verify requests through: given the scope of a request's credential, it
 // answers with the derived signing key for that scope and the principal the
 // key belongs to: at version 2, with whether it is the root user and the
-// identity policies in effect for it, and at version 3, with the values of
-// its condition keys too. It is not an AWS API; tule.dev/identity/keysource
+// identity policies in effect for it, at version 3, with the values of its
+// condition keys too, and at version 4, with its organization keys,
+// aws:PrincipalOrgID and aws:PrincipalOrgPaths. It is not an AWS API; tule.dev/identity/keysource
 // is its client and holds its wire types.
 //
 // The app verifies every call to it against the root user's key alone,
@@ -22,6 +23,7 @@ import (
 
 	"tule.dev/identity/internal/contracts"
 	"tule.dev/identity/internal/httpx"
+	"tule.dev/identity/internal/orgkeys"
 	"tule.dev/identity/keysource"
 )
 
@@ -34,12 +36,17 @@ const codeInvalidRequest = "InvalidRequest"
 type Module struct {
 	router *gas.Router
 	store  contracts.IdentityProvider
+	orgs   *orgkeys.Cache
 }
 
-// NewModule returns a Module answering from store. It registers its route
-// when the app initializes it.
-func NewModule(router *gas.Router, store contracts.IdentityProvider) *Module {
-	return &Module{router: router, store: store}
+// NewModule returns a Module answering from store, with the organization
+// keys orgs tells. It registers its route when the app initializes it.
+func NewModule(
+	router *gas.Router,
+	store contracts.IdentityProvider,
+	orgs *orgkeys.Cache,
+) *Module {
+	return &Module{router: router, store: store, orgs: orgs}
 }
 
 // Name identifies the module to gas.
@@ -60,10 +67,11 @@ func (m *Module) Close(context.Context) error {
 
 // signingKey answers with the signing key of the scope in the body, and
 // records the key's use with the scope's service and region. A request at
-// keysource.VersionAttributes or later is answered at that version, with
-// the principal's Root, Policies and condition key values; one at
-// keysource.VersionPolicies, at that version, with Root and Policies only;
-// an earlier one, as v0.1.0 answered it. The use is recorded when the key
+// keysource.VersionOrganization or later is answered at that version, with
+// the principal's Root, Policies, condition key values and organization
+// keys; one at keysource.VersionAttributes, at that version, without the
+// organization keys; one at keysource.VersionPolicies, at that version,
+// with Root and Policies only; an earlier one, as v0.1.0 answered it. The use is recorded when the key
 // is handed out: the caller checks the signature after, so a request it
 // then refuses is recorded too.
 func (m *Module) signingKey(ctx gas.Context) error {
@@ -84,6 +92,11 @@ func (m *Module) signingKey(ctx gas.Context) error {
 	if err = m.store.RecordKeyUse(ctx, req.AccessKeyID, req.Service, req.Region); err != nil {
 		return writeKeyError(ctx, err)
 	}
+	return write(ctx, http.StatusOK, m.answer(ctx, req.Version, key))
+}
+
+// answer is the response to a request at version for key.
+func (m *Module) answer(ctx gas.Context, version int, key sigv4.Key) keysource.Response {
 	out := keysource.Response{
 		Principal: keysource.Principal{
 			AccountID:   key.Principal.AccountID,
@@ -93,19 +106,36 @@ func (m *Module) signingKey(ctx gas.Context) error {
 		SigningKey: key.Signing,
 	}
 	p := key.Principal
-	if req.Version >= keysource.VersionPolicies {
+	if version >= keysource.VersionPolicies {
 		out.Version = keysource.VersionPolicies
 		out.Principal.Root = p.Root
 		out.Principal.Policies = p.Policies
 	}
-	if req.Version >= keysource.VersionAttributes {
+	if version >= keysource.VersionAttributes {
 		out.Version = keysource.VersionAttributes
 		out.Principal.PrincipalARN = p.PrincipalARN
 		out.Principal.UserID = p.UserID
 		out.Principal.PrincipalType = string(p.Type)
 		out.Principal.Tags = p.Tags
 	}
-	return write(ctx, http.StatusOK, out)
+	if version >= keysource.VersionOrganization {
+		out.Version = keysource.VersionOrganization
+		m.addOrganization(ctx, &out.Principal)
+	}
+	return out
+}
+
+// addOrganization sets the principal's organization keys. When the accounts
+// service cannot be asked, the keys are reported unknown and the failure is
+// logged, rather than the call failed: a condition on them then fails
+// closed, and every other request still verifies.
+func (m *Module) addOrganization(ctx gas.Context, p *keysource.Principal) {
+	keys, err := m.orgs.For(ctx, p.AccountID)
+	if err != nil {
+		httpx.Logger(ctx).Warn("the organization keys are unknown").
+			Str("account", p.AccountID).Err("error", err).Send()
+	}
+	p.OrgID, p.OrgPaths, p.OrgUnknown = keys.OrgID, keys.Paths, keys.Unknown
 }
 
 // writeKeyError answers a lookup that found no key with the code the client

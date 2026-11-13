@@ -205,12 +205,12 @@ func TestTheClientReportsAServiceRoleSessionsAttributes(t *testing.T) {
 	})
 }
 
-// answering serves a version 3 answer whose principal is principal, JSON
+// answering serves a version 4 answer whose principal is principal, JSON
 // for its fields besides AccountId, Arn and AccessKeyId.
 func answering(t *testing.T, principal string) string {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"Version":3,"SigningKey":"AA==","Principal":{` +
+		_, _ = w.Write([]byte(`{"Version":4,"SigningKey":"AA==","Principal":{` +
 			`"AccountId":"000000000000","Arn":"arn:aws:iam::000000000000:user/dev",` +
 			`"AccessKeyId":"AKIAAAAAAAAAAAAAAAAA"` + principal + `}}`))
 	}))
@@ -238,6 +238,18 @@ func TestTheClientRefusesAnInvalidPrincipal(t *testing.T) {
 		"too many tags":      `,"PrincipalType":"User","Tags":` + tagsJSON(keysource.MaxTags+1),
 		"keys in two cases":  `,"PrincipalType":"User","Tags":{"Env":"1","env":"2"}`,
 		"keys folded":        `,"PrincipalType":"User","Tags":{"Ä":"1","ä":"2"}`,
+		"unknown, yet an ID": `,"PrincipalType":"User","OrgUnknown":true,"OrgId":"` + orgID + `",` +
+			`"OrgPaths":["` + orgID + `/r-ab12/"]`,
+		"unknown, yet a path": `,"PrincipalType":"User","OrgUnknown":true,` +
+			`"OrgPaths":["` + orgID + `/r-ab12/"]`,
+		"a path, no ID":   `,"PrincipalType":"User","OrgPaths":["` + orgID + `/r-ab12/"]`,
+		"an ID, no path":  `,"PrincipalType":"User","OrgId":"` + orgID + `"`,
+		"not an org ID":   `,"PrincipalType":"User","OrgId":"o-short","OrgPaths":["o-short/r-ab12/"]`,
+		"two paths":       `,"PrincipalType":"User","OrgId":"` + orgID + `","OrgPaths":["` + orgID + `/r-ab12/","` + orgID + `/r-ab12/ou-ab12-11111111/"]`,
+		"another org":     `,"PrincipalType":"User","OrgId":"` + orgID + `","OrgPaths":["o-zzzzzzzzzz/r-ab12/"]`,
+		"no root":         `,"PrincipalType":"User","OrgId":"` + orgID + `","OrgPaths":["` + orgID + `/ou-ab12-11111111/"]`,
+		"no final slash":  `,"PrincipalType":"User","OrgId":"` + orgID + `","OrgPaths":["` + orgID + `/r-ab12"]`,
+		"a wildcard path": `,"PrincipalType":"User","OrgId":"` + orgID + `","OrgPaths":["` + orgID + `/*"]`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := newClient(t, answering(t, principal), rootKeyID, rootSecret).SigningKey(
@@ -255,5 +267,42 @@ func TestTheClientRefusesAnInvalidPrincipal(t *testing.T) {
 		rootKeyID, rootSecret).SigningKey(t.Context(), scope("AKIAAAAAAAAAAAAAAAAA", ""))
 	if err != nil || len(got.Principal.Tags) != keysource.MaxTags {
 		t.Fatalf("50 tags: %d tags, %v", len(got.Principal.Tags), err)
+	}
+}
+
+// orgID is the IAM User Guide's example organization ID
+// (aws:PrincipalOrgPaths).
+const orgID = "o-a1b2c3d4e5"
+
+// The client fills the organization keys the endpoint reports.
+func TestTheClientReportsTheOrganizationKeys(t *testing.T) {
+	for name, tc := range map[string]struct {
+		principal string
+		want      sigv4.Principal
+	}{
+		"a member under OUs": {
+			`,"OrgId":"` + orgID + `","OrgPaths":["` + orgID +
+				`/r-ab12/ou-ab12-11111111/ou-ab12-22222222/"]`,
+			sigv4.Principal{OrgID: orgID, OrgPaths: []string{
+				orgID + "/r-ab12/ou-ab12-11111111/ou-ab12-22222222/",
+			}},
+		},
+		"under the root":       {`,"OrgId":"` + orgID + `","OrgPaths":["` + orgID + `/r-ab12/"]`, sigv4.Principal{OrgID: orgID, OrgPaths: []string{orgID + "/r-ab12/"}}},
+		"in no organization":   {``, sigv4.Principal{}},
+		"organization unknown": {`,"OrgUnknown":true`, sigv4.Principal{OrgUnknown: true}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := newClient(t, answering(t, `,"PrincipalType":"User"`+tc.principal),
+				rootKeyID, rootSecret).SigningKey(t.Context(), scope("AKIAAAAAAAAAAAAAAAAA", ""))
+			if err != nil {
+				t.Fatalf("signing key: %v", err)
+			}
+			p := got.Principal
+			if p.OrgID != tc.want.OrgID || !reflect.DeepEqual(p.OrgPaths, tc.want.OrgPaths) ||
+				p.OrgUnknown != tc.want.OrgUnknown {
+				t.Fatalf("organization = %q %q %t, want %q %q %t", p.OrgID, p.OrgPaths,
+					p.OrgUnknown, tc.want.OrgID, tc.want.OrgPaths, tc.want.OrgUnknown)
+			}
+		})
 	}
 }

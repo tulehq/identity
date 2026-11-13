@@ -277,6 +277,9 @@ func askAt(t *testing.T, url string, version int) versionedAnswer {
 // attributeFields are the fields version 3 added to the principal.
 var attributeFields = []string{"PrincipalArn", "UserId", "PrincipalType", "Tags"}
 
+// organizationFields are the fields version 4 added to the principal.
+var organizationFields = []string{"OrgId", "OrgPaths", "OrgUnknown"}
+
 func TestAnUnversionedRequestIsAnsweredAsV010(t *testing.T) {
 	out := askAt(t, startIdentity(t), 0)
 	p := out.Principal
@@ -284,7 +287,7 @@ func TestAnUnversionedRequestIsAnsweredAsV010(t *testing.T) {
 		p["Root"] != nil || p["Policies"] != nil {
 		t.Fatalf("answer = %+v, want v0.1.0's fields only", out)
 	}
-	for _, f := range attributeFields {
+	for _, f := range append(attributeFields, organizationFields...) {
 		if _, ok := p[f]; ok {
 			t.Fatalf("principal = %v, want no %s", p, f)
 		}
@@ -300,21 +303,28 @@ func TestAVersion2RequestIsAnsweredAtVersion2(t *testing.T) {
 	if out.Version != float64(keysource.VersionPolicies) || p["Root"] != true {
 		t.Fatalf("answer = %+v, want version 2 with Root", out)
 	}
-	for _, f := range attributeFields {
+	for _, f := range append(attributeFields, organizationFields...) {
 		if _, ok := p[f]; ok {
 			t.Fatalf("principal = %v, want no %s", p, f)
 		}
 	}
 
+	// A client of identity v0.4.1 asks at version 3, and is answered without
+	// the organization keys, and without asking the accounts service.
 	out = askAt(t, url, keysource.VersionAttributes)
 	if out.Version != float64(keysource.VersionAttributes) ||
 		out.Principal["PrincipalType"] != "Account" {
 		t.Fatalf("answer = %+v, want version 3 with the principal's type", out)
 	}
+	for _, f := range organizationFields {
+		if _, ok := out.Principal[f]; ok {
+			t.Fatalf("principal = %v, want no %s", out.Principal, f)
+		}
+	}
 	// A client newer than the endpoint is answered at the endpoint's version.
-	if out = askAt(t, url, keysource.VersionAttributes+1); out.Version !=
-		float64(keysource.VersionAttributes) {
-		t.Fatalf("answer = %+v, want version 3", out)
+	if out = askAt(t, url, keysource.VersionOrganization+1); out.Version !=
+		float64(keysource.VersionOrganization) {
+		t.Fatalf("answer = %+v, want version 4", out)
 	}
 }
 
@@ -339,6 +349,23 @@ func TestTheClientRefusesAnEndpointThatReportsNoAttributes(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"Version":2,"Principal":{"AccountId":"000000000000",` +
 			`"Arn":"arn:aws:iam::000000000000:user/dev","AccessKeyId":"AKIA"},"SigningKey":"AA=="}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	_, err := newClient(t, srv.URL, rootKeyID, rootSecret).SigningKey(t.Context(),
+		scope("AKIAAAAAAAAAAAAAAAAA", ""))
+	var e *keysource.Error
+	if !errors.As(err, &e) || e.Code != keysource.CodeVersionUnsupported {
+		t.Fatalf("got %v, want a %s *keysource.Error", err, keysource.CodeVersionUnsupported)
+	}
+}
+
+func TestTheClientRefusesAnEndpointThatReportsNoOrganization(t *testing.T) {
+	// Identity v0.4.1 answers at version 3, with no organization keys.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"Version":3,"Principal":{"AccountId":"000000000000",` +
+			`"Arn":"arn:aws:iam::000000000000:user/dev","AccessKeyId":"AKIA",` +
+			`"PrincipalType":"User"},"SigningKey":"AA=="}`))
 	}))
 	t.Cleanup(srv.Close)
 

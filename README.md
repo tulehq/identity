@@ -60,7 +60,7 @@ Settings come from environment variables prefixed with `TULE_`, and from a
 | `TULE_Auth_AccessKeyID` | required | The root user's access key ID, the key every Tule service is configured with |
 | `TULE_Auth_SecretAccessKey` | required | Its secret |
 | `TULE_Identity_AccountID` | `000000000000` | The management account, the root user's: 12 digits. The default is accounts' default management account |
-| `TULE_Identity_AccountsEndpoint` | unset | The accounts service's base URL, such as `http://localhost:9020`, which `AssumeRole` asks about member accounts. Unset, no role can be assumed |
+| `TULE_Identity_AccountsEndpoint` | unset | The accounts service's base URL, such as `http://localhost:9020`, which `AssumeRole` asks about member accounts, and which tells the [organization keys](#the-signing-key-endpoint). Unset, no role of another account can be assumed, and no principal is in an organization |
 | `TULE_HSTS_MaxAge` | unset | `Strict-Transport-Security` max age; the header is only sent when set |
 | `TULE_Server_ReadTimeout` | `30s` | How long the server may take to read a request, body included |
 | `TULE_Server_ReadHeaderTimeout` | `30s` | How long it may take to read a request's headers; must be positive |
@@ -336,14 +336,14 @@ uses, since those are all `POST /`.
 
   ```json
   {"AccessKeyId": "AKIA...", "SessionToken": "...", "Date": "20261113",
-   "Region": "us-east-1", "Service": "secretsmanager", "Version": 3}
+   "Region": "us-east-1", "Service": "secretsmanager", "Version": 4}
   ```
 
-  `SessionToken` is left out when the request carries none. `Version` is 3
-  for the current client and 2 for the v0.2.0 to v0.3.1 clients, and each
-  is answered at the version it asks for; a request without it, as the
-  v0.1.0 client sends it, is answered as v0.1.0 answered. A request above 3
-  is answered at 3.
+  `SessionToken` is left out when the request carries none. `Version` is 4
+  for the current client, 3 for the v0.4.0 and v0.4.1 clients and 2 for the
+  v0.2.0 to v0.3.1 clients, and each is answered at the version it asks
+  for; a request without it, as the v0.1.0 client sends it, is answered as
+  v0.1.0 answered. A request above 4 is answered at 4.
 - **Response.** `200` with the derived signing key for that date, region and
   service, base64-encoded, and the principal the key belongs to. It never
   returns a secret. At version 2 the principal also carries `Root`, true for
@@ -374,6 +374,45 @@ uses, since those are all `POST /`.
   session carries no session tags, since `AssumeRole` refuses them, so its
   tags are its role's.
 
+  At version 4 the principal also carries its organization keys:
+
+  | Field | Condition key | Value |
+  | --- | --- | --- |
+  | `OrgId` | `aws:PrincipalOrgID` | the organization's ID, `o-...` |
+  | `OrgPaths` | `aws:PrincipalOrgPaths` | the account's path, one value: the organization, root and OU IDs, each followed by a slash, such as `o-a1b2c3d4e5/r-ab12/ou-ab12-11111111/` |
+  | `OrgUnknown` | | `true` when identity could not ask the accounts service |
+
+  AWS includes both keys "only if the principal is a member of an
+  organization", and `aws:PrincipalOrgID` "also applies to the management
+  account" (the IAM User Guide,
+  [global condition context keys](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_condition-keys.html)).
+  So a principal of every kind, the root user, an IAM user or a role
+  session, carries them when its account is an `ACTIVE` member of the
+  organization the accounts service reports, or its management account, and
+  none of them otherwise: an account in no organization, one removed from
+  it, a closed or suspended one, or any account when there is no
+  organization or no `TULE_Identity_AccountsEndpoint`. `aws:PrincipalOrgPaths`
+  is multivalued, but an account has one parent ("a child can have only a
+  single parent", the Organizations API Reference,
+  [ListParents](https://docs.aws.amazon.com/organizations/latest/APIReference/API_ListParents.html)),
+  so it carries one path. Identity asks the accounts service with
+  `DescribeOrganization`, `DescribeAccount` and `ListParents` up to the
+  root, signed with the root user's key.
+
+  **Staleness.** Identity keeps an account's keys for 30 seconds once the
+  accounts service has told them, so an account moved, removed or closed,
+  or an organization deleted, keeps its principals' old keys for up to 30
+  seconds. A lookup that fails is not kept.
+
+  **The accounts service unreachable.** When the accounts service cannot be
+  asked, within 5 seconds, the call does not fail: the principal is reported
+  with `OrgUnknown` and neither key, and the failure is logged as a warning
+  naming the account. A service must then supply `aws:PrincipalOrgID` and
+  `aws:PrincipalOrgPaths` to its policy evaluator as unknown, never as
+  absent: an absent key satisfies a negated operator, so a condition such
+  as `StringNotEquals` on `aws:PrincipalOrgID` would grant, or let a `Deny`
+  lapse, for a principal whose organization is not known.
+
   **A session whose role no longer exists.** A session is bound to its
   role's unique ID, so once the role is deleted the session has no role,
   even when a role of the same name is created again: it is answered with
@@ -395,12 +434,16 @@ uses, since those are all `POST /`.
                  "PrincipalType": "AssumedRole",
                  "Tags": {"Project": "pegasus"},
                  "AccessKeyId": "ASIA...",
+                 "OrgId": "o-a1b2c3d4e5",
+                 "OrgPaths": ["o-a1b2c3d4e5/r-ab12/ou-ab12-11111111/"],
                  "Policies": [{"Version": "2012-10-17", "Statement": [...]}]},
    "SigningKey": "...",
-   "Version": 3}
+   "Version": 4}
   ```
 
-  At version 2 the response has none of version 3's fields, and without
+  At version 3 the response has none of version 4's fields, and identity
+  does not ask the accounts service for it; at version 2 it has none of
+  version 3's either, and without
   `Version` in the request it has none of `Root`, `Policies` and `Version`
   either, so an older client keeps working and gets what it asked for.
 
@@ -441,15 +484,19 @@ It maps the refusals to `sigv4.ErrUnknownAccessKey`,
 verifier answers them as it answers its own; `InactiveAccessKey` becomes
 `keysource.ErrInactiveAccessKey`, which wraps `sigv4.ErrUnknownAccessKey`. Any
 other failure is a `*keysource.Error` or a transport error, which a verifier
-reports as `KindKeyLookupFailed`. It asks for version 3 and fills
-`sigv4.Principal.Root` and `Policies`, and `PrincipalARN`, `UserID`, `Type`
-and `Tags`, from the answer; an identity that answers below version 3,
-v0.3.1 or earlier, is a `*keysource.Error` with the code
+reports as `KindKeyLookupFailed`. It asks for version 4 and fills
+`sigv4.Principal.Root` and `Policies`, `PrincipalARN`, `UserID`, `Type`
+and `Tags`, and `OrgID`, `OrgPaths` and `OrgUnknown` (`tule.dev/sigv4`
+v0.5.0), from the answer; an identity that answers below version 4,
+v0.4.1 or earlier, is a `*keysource.Error` with the code
 `VersionUnsupported`, since it cannot say what condition keys the principal
 has. It also refuses, with the code `InvalidResponse`, a principal that
 breaks the contract: a `PrincipalType` other than `Account`, `User` and
 `AssumedRole`, `Root` set other than exactly for an `Account`, more than 50
-tags, or two tag keys equal regardless of case.
+tags, two tag keys equal regardless of case, `OrgUnknown` with either key,
+`OrgPaths` without `OrgId`, or an `OrgId` that is not `o-` and 10 to 32
+lower-case letters or digits without exactly one path of the form
+`<OrgId>/r-.../` followed by any number of `ou-.../`.
 It caches nothing: every verification asks
 identity, so a key deactivated or deleted is refused on the next request.
 
@@ -726,6 +773,23 @@ them by ARN, so a recreated user or role inherits what its ARN was granted.
 - **Logs record the connection's peer address.** `X-Forwarded-For` is not
   trusted, since nothing is expected in front of this service and the header
   is unsigned.
+
+## Upgrading from v0.4.1
+
+- **The signing-key endpoint** answers v0.4.1's and older clients as
+  before, and asks the accounts service nothing for them. The `keysource`
+  client now asks for version 4, which v0.4.1 does not serve, so a service
+  that takes it needs an identity that does; it fills the
+  `sigv4.Principal` fields `tule.dev/sigv4` v0.5.0 added, and a service must
+  supply the organization keys as unknown for a principal with
+  `OrgUnknown`, as [the endpoint's contract](#the-signing-key-endpoint)
+  says.
+- **Resource-based policies stored before** a service adopts
+  [`principals.Bind`](#the-principals-client) are unbound: they name users
+  and roles by ARN, and keep matching by ARN, so a user or role created again
+  under such an ARN is granted what the deleted one was, until the policy is
+  saved again. Nothing binds them on its own: a stored policy is changed
+  only when it is saved.
 
 ## Upgrading from v0.4.0
 
