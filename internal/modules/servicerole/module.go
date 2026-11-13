@@ -195,14 +195,17 @@ func (m *Module) trustedRole(ctx gas.Context, req *servicerole.Request) (*contra
 		return nil, noSuchRole
 	}
 
-	doc, err := trustdoc.ForCaller(role, "")
-	if err != nil {
-		return nil, err
+	notTrusted := &refusal{
+		status: http.StatusForbidden, code: servicerole.CodeNotTrusted,
+		message: "The trust policy of " + role.ARN + " does not allow " +
+			req.ServicePrincipal + " to assume it.",
 	}
-	trust, err := policy.ParseTrust([]byte(doc))
-	if err != nil {
-		// Every trust policy was parsed when it was stored.
-		return nil, fmt.Errorf("servicerole: parse the trust policy of %s: %w", role.ARN, err)
+	trust, ok, err := trustdoc.Parse(role, "", httpx.Logger(ctx))
+	switch {
+	case err != nil:
+		return nil, err
+	case !ok:
+		return nil, notTrusted
 	}
 	now := time.Now().UTC()
 	keys := map[string][]string{
@@ -219,11 +222,7 @@ func (m *Module) trustedRole(ctx gas.Context, req *servicerole.Request) (*contra
 	}
 	if policy.TrustMatch(trust, role.AccountID, "sts:AssumeRole", req.ServicePrincipal,
 		keys).Decision != policy.Allow {
-		return nil, &refusal{
-			status: http.StatusForbidden, code: servicerole.CodeNotTrusted,
-			message: "The trust policy of " + role.ARN + " does not allow " +
-				req.ServicePrincipal + " to assume it.",
-		}
+		return nil, notTrusted
 	}
 	return role, nil
 }
