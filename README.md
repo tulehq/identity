@@ -340,7 +340,7 @@ uses, since those are all `POST /`.
   ```
 
   `SessionToken` is left out when the request carries none. `Version` is 3
-  for the current client and 2 for the v0.2.0 and v0.3.0 clients, and each
+  for the current client and 2 for the v0.2.0 to v0.3.1 clients, and each
   is answered at the version it asks for; a request without it, as the
   v0.1.0 client sends it, is answered as v0.1.0 answered. A request above 3
   is answered at 3.
@@ -368,12 +368,24 @@ uses, since those are all `POST /`.
   without its path, so `PrincipalArn` is where its role's ARN is found; a
   resource-based policy that names the role matches the session through it.
   Sessions from the [assume-role endpoint](#the-assume-role-endpoint) are
-  role sessions like those from `AssumeRole`. A session whose role is gone
-  has no `PrincipalArn` and no tags. `Tags` is an object of keys to values,
-  left out when there are none; keys keep the case they were set with and
+  role sessions like those from `AssumeRole`. `Tags` is an object of keys to
+  values, left out when there are none; keys keep the case they were set with and
   are unique regardless of case, as IAM's user and role tags are. A
   session carries no session tags, since `AssumeRole` refuses them, so its
   tags are its role's.
+
+  **A session whose role no longer exists.** A session is bound to its
+  role's unique ID, so once the role is deleted the session has no role,
+  even when a role of the same name is created again: it is answered with
+  `PrincipalType` `AssumedRole`, its `UserId`, and no `PrincipalArn`, tags
+  or policies. For an `AssumedRole`, an absent `PrincipalArn` means exactly
+  that, never that it was not supplied. A service must then supply
+  `aws:PrincipalArn` to its policy evaluator as an empty slice, which
+  `tule.dev/policy` treats as an absent key, and must never derive it from
+  the assumed-role ARN: that ARN still names the role, so a session of the
+  deleted role would match what the new role's ARN is granted, which binding
+  sessions to unique IDs exists to prevent. Nor may the session match the
+  role's ARN in a resource-based policy's `Principal`.
 
   ```json
   {"Principal": {"AccountId": "000000000000",
@@ -432,7 +444,7 @@ other failure is a `*keysource.Error` or a transport error, which a verifier
 reports as `KindKeyLookupFailed`. It asks for version 3 and fills
 `sigv4.Principal.Root` and `Policies`, and `PrincipalARN`, `UserID`, `Type`
 and `Tags`, from the answer; an identity that answers below version 3,
-v0.3.0 or earlier, is a `*keysource.Error` with the code
+v0.3.1 or earlier, is a `*keysource.Error` with the code
 `VersionUnsupported`, since it cannot say what condition keys the principal
 has. It also refuses, with the code `InvalidResponse`, a principal that
 breaks the contract: a `PrincipalType` other than `Account`, `User` and
@@ -626,17 +638,17 @@ transport error otherwise.
   trusted, since nothing is expected in front of this service and the header
   is unsigned.
 
-## Upgrading from v0.3.0
+## Upgrading from v0.3.1
 
-- **The signing-key endpoint** answers v0.3.0's and older clients as
-  before. The `keysource` client now asks for version 3, which v0.3.0 does
+- **The signing-key endpoint** answers v0.3.1's and older clients as
+  before. The `keysource` client now asks for version 3, which v0.3.1 does
   not serve, so a service that takes it needs an identity that does; it
-  fills the `sigv4.Principal` fields `tule.dev/sigv4` v0.4.0 added.
-- **A list member's index must be spelled from 1 in decimal.**
-  `Tags.member.01.Key` and the like, which were read as member 1, are now
-  `ValidationError`.
-- **`aws:RequestedRegion` is always `us-east-1`**, no longer the region the
-  credential is scoped to.
+  fills the `sigv4.Principal` fields `tule.dev/sigv4` v0.4.0 added, and a
+  service must supply `aws:PrincipalArn` for a session whose role no longer
+  exists as [the endpoint's contract](#the-signing-key-endpoint) says.
+- **Tag keys fold beyond ASCII.** A user or role tagged `Ä` and then `ä` now
+  has one tag, `ä`. Tags stored twice that way before keep both until one is
+  removed or set again.
 
 ## Upgrading from v0.1.0
 

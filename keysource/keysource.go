@@ -19,6 +19,21 @@
 // aws:userid, aws:PrincipalType and aws:PrincipalTag. The response carries
 // the Version it was answered at, so a client can tell an identity too old
 // to report what it needs.
+//
+// # A session whose role no longer exists
+//
+// A role session is bound to its role's unique ID, as AWS binds a role to
+// its ID rather than its name. Once the role is deleted, its sessions have
+// no role, even when a new role has taken its name, and the endpoint reports
+// them with an empty PrincipalARN, no Tags and no Policies. So for a
+// principal whose Type is sigv4.PrincipalTypeAssumedRole, an empty
+// PrincipalARN means its role no longer exists, never that the value was
+// not supplied. A service must then supply aws:PrincipalArn to its policy
+// evaluator as an empty slice, which tule.dev/policy reads as an absent key,
+// and must never derive it from the assumed-role ARN, which still names the
+// role: a session of the deleted role would match what the new role's ARN is
+// granted. Nor may such a session match a role ARN in a resource-based
+// policy's Principal element.
 package keysource
 
 import (
@@ -89,7 +104,8 @@ func (r *Request) Scope() sigv4.Scope {
 // VersionAttributes or later, as the values of the principal's condition
 // keys; sigv4.Principal documents each. PrincipalARN is aws:PrincipalArn:
 // an IAM user's or the root user's ARN, and a role session's role ARN with
-// its path, empty for a session whose role is gone. UserID is aws:userid:
+// its path, empty for a session whose role no longer exists (see the
+// package doc for what a service must then do). UserID is aws:userid:
 // an IAM user's unique ID, <role ID>:<session name> for a role session, and
 // the account ID for the root user. PrincipalType is aws:PrincipalType:
 // User, AssumedRole or Account. Tags are the aws:PrincipalTag values: an
