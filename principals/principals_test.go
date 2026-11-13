@@ -322,25 +322,54 @@ func TestOnlyTheRootKeyMayResolve(t *testing.T) {
 }
 
 func TestTheClientRefusesAnInvalidAnswer(t *testing.T) {
-	for name, answer := range map[string]string{
-		"an ARN it did not ask for": `{"Ids":{"` + roleARN("/", "other") + `":"AROAEXAMPLE123456789"}}`,
-		"an ARN to a non-ID":        `{"Ids":{"` + userARN("/", "dev") + `":"dev"}}`,
-		"an ID to a non-ARN":        `{"Arns":{"AIDAEXAMPLE123456789":"*"}}`,
+	// Bind asks for the ARN's ID, Show for the ID's ARN.
+	doc := bucketPolicy(`["`+userARN("/", "dev")+`","AIDAEXAMPLE123456789"]`, `"`+account+`"`)
+	for name, tc := range map[string]struct {
+		answer string
+		show   bool
+	}{
+		"an ARN it did not ask for": {`{"Ids":{"` + roleARN("/", "other") + `":"AROAEXAMPLE123456789"}}`, false},
+		"an ARN to a non-ID":        {`{"Ids":{"` + userARN("/", "dev") + `":"dev"}}`, false},
+		"a user to a role's ID":     {`{"Ids":{"` + userARN("/", "dev") + `":"AROAEXAMPLE123456789"}}`, false},
+		"an ID it did not ask for":  {`{"Arns":{"AIDAOTHER12345678901":"` + userARN("/", "dev") + `"}}`, true},
+		"an ID to a non-ARN":        {`{"Arns":{"AIDAEXAMPLE123456789":"*"}}`, true},
+		"a user's ID to a role":     {`{"Arns":{"AIDAEXAMPLE123456789":"` + roleARN("/", "dev") + `"}}`, true},
 	} {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			_, _ = w.Write([]byte(answer))
+			_, _ = w.Write([]byte(tc.answer))
 		}))
 		c := newClient(t, srv.URL, rootSecret)
-		doc := bucketPolicy(`["`+userARN("/", "dev")+`","AIDAEXAMPLE123456789"]`, `"`+account+`"`)
-		_, bErr := c.Bind(t.Context(), doc)
-		_, sErr := c.Show(t.Context(), doc)
+		call := c.Bind
+		if tc.show {
+			call = c.Show
+		}
+		_, err := call(t.Context(), doc)
 		var e *principals.Error
-		if !errors.As(bErr, &e) && !errors.As(sErr, &e) {
-			t.Errorf("%s: bind %v, show %v; want an *Error", name, bErr, sErr)
-		} else if e.Code != principals.CodeInvalidResponse {
-			t.Errorf("%s: code %s; want %s", name, e.Code, principals.CodeInvalidResponse)
+		if !errors.As(err, &e) || e.Code != principals.CodeInvalidResponse {
+			t.Errorf("%s: %v; want a %s *Error", name, err, principals.CodeInvalidResponse)
 		}
 		srv.Close()
+	}
+
+	// A role's ARN to its role ID, and a user's ID to its user ARN, are
+	// accepted.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req principals.Request
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if len(req.ARNs) > 0 {
+			_, _ = w.Write([]byte(`{"Ids":{"` + roleARN("/", "dev") + `":"AROAEXAMPLE123456789"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"Arns":{"AIDAEXAMPLE123456789":"` + userARN("/", "dev") + `"}}`))
+	}))
+	defer srv.Close()
+	c := newClient(t, srv.URL, rootSecret)
+	roleDoc := bucketPolicy(`["`+roleARN("/", "dev")+`","AIDAEXAMPLE123456789"]`, `"`+account+`"`)
+	if _, err := c.Bind(t.Context(), roleDoc); err != nil {
+		t.Errorf("bind: %v", err)
+	}
+	if _, err := c.Show(t.Context(), roleDoc); err != nil {
+		t.Errorf("show: %v", err)
 	}
 }
 
