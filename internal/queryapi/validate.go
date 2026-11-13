@@ -88,7 +88,55 @@ var (
 	RoleARN = rule(20, 2048, "")
 	// RoleSessionName is roleSessionNameType.
 	RoleSessionName = rule(2, 64, `[\w+=,.@-]*`)
+	// ExternalID is AssumeRole's externalIdType.
+	ExternalID = rule(2, 1224, `[\w+=,.@:\/-]*`)
+
+	// PolicyName is policyNameType, the name of a managed or inline policy.
+	PolicyName = rule(1, 128, `[\w+=,.@-]+`)
+	// PolicyPath is policyPathType, the path of a managed policy and the
+	// PathPrefix of the policy listings.
+	PolicyPath = rule(1, 512, `((/[A-Za-z0-9\.,\+@=_-]+)*)/`)
+	// PolicyDocument is policyDocumentType.
+	PolicyDocument = Rule{
+		min: 1, max: 131072, source: `[\u0009\u000A\u000D\u0020-\u00FF]+`,
+		pattern: regexp.MustCompile(`^[\x{09}\x{0A}\x{0D}\x{20}-\x{FF}]+$`),
+	}
+	// PolicyDescription is policyDescriptionType.
+	PolicyDescription = rule(0, 1000, "")
+	// PolicyARN is IAM's arnType, which has no pattern; whether it names a
+	// managed policy is checked after.
+	PolicyARN = rule(20, 2048, "")
+	// PolicyVersionID is policyVersionIdType.
+	PolicyVersionID = rule(0, 1<<31-1, `v[1-9][0-9]*(\.[A-Za-z0-9-]*)?`)
+	// RoleName is roleNameType.
+	RoleName = rule(1, 64, `[\w+=,.@-]+`)
+	// RoleDescription is roleDescriptionType.
+	RoleDescription = Rule{
+		min: 0, max: 1000, source: `[\u0009\u000A\u000D\u0020-\u007E\u00A1-\u00FF]*`,
+		pattern: regexp.MustCompile(`^[\x{09}\x{0A}\x{0D}\x{20}-\x{7E}\x{A1}-\x{FF}]*$`),
+	}
 )
+
+// The bounds of roleMaxSessionDurationType, in seconds.
+const (
+	MinRoleMaxSessionDuration = 3600
+	MaxRoleMaxSessionDuration = 43200
+)
+
+// Bool reads an optional boolean parameter, which the Query protocol sends
+// as true or false. It returns false when the request leaves it out.
+func Bool(p Params, field string) (bool, error) {
+	v, ok := p.Get(field)
+	switch {
+	case !ok:
+		return false, nil
+	case v == "true":
+		return true, nil
+	case v == "false":
+		return false, nil
+	}
+	return false, errConstraint(field, v, "be a boolean")
+}
 
 // errConstraint is the ValidationError for a parameter that breaks a
 // constraint, in the message form of the Query services.
@@ -164,6 +212,15 @@ func Enum(p Params, field string, values ...string) (string, error) {
 	}
 	return "", errConstraint(field, v,
 		"satisfy enum value set: ["+strings.Join(values, ", ")+"]")
+}
+
+// OptionalEnum reads an optional parameter that must be one of values, and
+// returns unset when the request leaves it out.
+func OptionalEnum(p Params, field, unset string, values ...string) (string, error) {
+	if _, ok := p.Get(field); !ok {
+		return unset, nil
+	}
+	return Enum(p, field, values...)
 }
 
 // Int reads an optional integer parameter in [minValue, maxValue]. It

@@ -55,8 +55,10 @@ func TestGetAccessKeyInfo(t *testing.T) {
 	// user's key and for the root user's alike ("Access key IDs beginning
 	// with AKIA are long-term credentials for an IAM user or the AWS account
 	// root user").
+	// The user may call it: sts:GetAccessKeyInfo needs an allowing policy
+	// for an identity-issued principal (the design's breaking change).
 	srv, c := rootIAM(t)
-	key := userWithKey(t, c, "dev")
+	key := userWithPolicy(t, c, "dev", policyDoc(allow("sts:GetAccessKeyInfo", "*")))
 	sc := stsFor(srv, rootCreds())
 
 	for name, id := range map[string]string{"user key": key.AccessKeyID, "root key": rootKeyID} {

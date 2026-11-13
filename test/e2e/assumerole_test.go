@@ -260,9 +260,9 @@ func testRoleSessionName(t *testing.T, f orgFixture) {
 }
 
 func testRefusedRoles(t *testing.T, f orgFixture) {
-	// The spec: only OrganizationAccountAccessRole in an ACTIVE member
-	// account; anything else answers as AWS does for a role that does not
-	// exist, AccessDenied (see TestAssumeRoleWithoutAccounts). Role names
+	// None of these roles exists (identity creates OrganizationAccountAccessRole
+	// only in an ACTIVE member account), and a role that does not exist
+	// answers AccessDenied (see TestAssumeRoleWithoutAccounts). Role names
 	// are case sensitive when assumed (IAM User Guide, "Troubleshoot IAM
 	// roles"). Assumption: a closed account's role is refused the same way.
 	sc := stsFor(f.srv, rootCreds())
@@ -284,8 +284,10 @@ func testRefusedRoles(t *testing.T, f orgFixture) {
 }
 
 func testRefusedCallers(t *testing.T, f orgFixture) {
-	// The spec: AssumeRole is called by the root key of the management
-	// account. Any other caller is denied, in AWS's AccessDenied shape.
+	// The role trusts the management account, so a management user needs a
+	// policy allowing sts:AssumeRole on it, which this one lacks; the
+	// session is of the member account, which the role does not trust.
+	// Both are denied, in AWS's AccessDenied shape.
 	root := iamFor(f.srv, rootCreds())
 	userKey := userWithKey(t, root, "would-be-admin")
 	sess := sessionCreds(assume(t, f.srv, f.member, "chain", nil))

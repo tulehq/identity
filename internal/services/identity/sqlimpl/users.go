@@ -92,13 +92,8 @@ func (s *Service) GetUser(ctx context.Context, accountID, name string) (*contrac
 		if err != nil {
 			return err
 		}
-		rows, err := queryAll(ctx, tx, scanTag,
-			`SELECT key, value FROM user_tags WHERE user_id = ? ORDER BY key`, u.ID)
-		if err != nil {
+		if u.Tags, err = tagsOf(ctx, tx, userTags, u.ID); err != nil {
 			return err
-		}
-		for _, r := range rows {
-			u.Tags = append(u.Tags, r.item)
 		}
 		out = u
 		return nil
@@ -136,8 +131,9 @@ func (s *Service) ListUsers(
 }
 
 // DeleteUser deletes the IAM user of the account with the name, failing with
-// contracts.ErrDeleteConflict while it has access keys, as IAM requires them
-// to be deleted first.
+// contracts.ErrDeleteConflict while it has access keys, and
+// contracts.ErrHasAttachedPolicies or contracts.ErrHasInlinePolicies while it
+// has policies, as IAM requires them to be removed first.
 func (s *Service) DeleteUser(ctx context.Context, accountID, name string) error {
 	return s.inTx(ctx, func(tx *sql.Tx) error {
 		u, err := loadUser(ctx, tx, accountID, name)
@@ -151,6 +147,9 @@ func (s *Service) DeleteUser(ctx context.Context, accountID, name string) error 
 		}
 		if hasKeys {
 			return contracts.ErrDeleteConflict
+		}
+		if err = checkNoPolicies(ctx, tx, contracts.EntityUser, u.ID); err != nil {
+			return err
 		}
 		if err = exec(ctx, tx, `DELETE FROM user_tags WHERE user_id = ?`, u.ID); err != nil {
 			return err

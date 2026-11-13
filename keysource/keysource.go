@@ -9,6 +9,13 @@
 // for the signing name SigningName, which every Tule service holds already.
 // It answers with the derived signing key for that scope and the principal
 // the key belongs to, never with a secret.
+//
+// The endpoint is versioned by the request. A request with no Version, as a
+// v0.1.0 client sends it, is answered as v0.1.0 answered it: the principal's
+// account, ARN and access key ID. A request with Version 2 or later is also
+// told whether the principal is its account's root user and the identity
+// policies in effect for it, and the response carries the Version it was
+// answered at, so a client can tell an identity too old to report policies.
 package keysource
 
 import (
@@ -40,28 +47,52 @@ const (
 	SigningRegion = "us-east-1"
 )
 
+// Version is the endpoint version this client asks for: the first to report
+// the principal's Root and Policies.
+const Version = 2
+
 // Request is the body of a call: the scope of the credential a request was
-// signed with, as sigv4.Scope holds it.
+// signed with, as sigv4.Scope holds it, and the endpoint version the caller
+// speaks, 0 for v0.1.0's.
 type Request struct {
 	AccessKeyID  string `json:"AccessKeyId"`
 	SessionToken string `json:"SessionToken,omitempty"`
 	Date         string `json:"Date"`
 	Region       string `json:"Region"`
 	Service      string `json:"Service"`
+	Version      int    `json:"Version,omitempty"`
 }
 
-// Principal is who a signing key belongs to.
+// Scope is the credential scope the request carries.
+func (r *Request) Scope() sigv4.Scope {
+	return sigv4.Scope{
+		AccessKeyID:  r.AccessKeyID,
+		SessionToken: r.SessionToken,
+		Date:         r.Date,
+		Region:       r.Region,
+		Service:      r.Service,
+	}
+}
+
+// Principal is who a signing key belongs to. Root and Policies are only
+// reported at Version 2 or later: Root for the account's root user, which is
+// never evaluated against policies, and Policies for the identity policy
+// documents in effect for anyone else.
 type Principal struct {
-	AccountID   string `json:"AccountId"`
-	ARN         string `json:"Arn"`
-	AccessKeyID string `json:"AccessKeyId"`
+	AccountID   string            `json:"AccountId"`
+	ARN         string            `json:"Arn"`
+	AccessKeyID string            `json:"AccessKeyId"`
+	Policies    []json.RawMessage `json:"Policies,omitempty"`
+	Root        bool              `json:"Root,omitempty"`
 }
 
 // Response is the body of a successful call. SigningKey is the derived key
-// for the scope, base64-encoded as JSON encodes bytes.
+// for the scope, base64-encoded as JSON encodes bytes. Version is the
+// endpoint version the call was answered at, absent for v0.1.0's.
 type Response struct {
-	Principal  Principal `json:"Principal"`
 	SigningKey []byte    `json:"SigningKey"`
+	Principal  Principal `json:"Principal"`
+	Version    int       `json:"Version,omitempty"`
 }
 
 // ErrorResponse is the body of a failed call.
@@ -152,13 +183,22 @@ func New(cfg Config) (*Client, error) {
 	}, nil
 }
 
-// SigningKey asks identity for the signing key of scope. It returns
-// sigv4.ErrUnknownAccessKey, ErrInactiveAccessKey (which wraps it),
-// sigv4.ErrInvalidSessionToken or sigv4.ErrExpiredSessionToken when identity
-// has no key for the scope, and an *Error or a transport error otherwise.
+// SigningKey asks identity for the signing key of scope, with the
+// principal's Root and Policies. It returns sigv4.ErrUnknownAccessKey,
+// ErrInactiveAccessKey (which wraps it), sigv4.ErrInvalidSessionToken or
+// sigv4.ErrExpiredSessionToken when identity has no key for the scope, and
+// an *Error or a transport error otherwise, an identity that answers below
+// Version included: it cannot say what the principal may do.
 func (c *Client) SigningKey(ctx context.Context, scope sigv4.Scope) (sigv4.Key, error) {
 	//nolint:gosec // G117: the scope's session token is what identity checks
-	body, err := json.Marshal(Request(scope))
+	body, err := json.Marshal(Request{
+		AccessKeyID:  scope.AccessKeyID,
+		SessionToken: scope.SessionToken,
+		Date:         scope.Date,
+		Region:       scope.Region,
+		Service:      scope.Service,
+		Version:      Version,
+	})
 	if err != nil {
 		return sigv4.Key{}, fmt.Errorf("keysource: encode the request: %w", err)
 	}
@@ -178,9 +218,12 @@ func (c *Client) SigningKey(ctx context.Context, scope sigv4.Scope) (sigv4.Key, 
 		return sigv4.Key{}, fmt.Errorf("keysource: call the signing-key endpoint: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, MaxResponseSize+1))
 	if err != nil {
 		return sigv4.Key{}, fmt.Errorf("keysource: read the response: %w", err)
+	}
+	if len(raw) > MaxResponseSize {
+		return sigv4.Key{}, fmt.Errorf("keysource: the response exceeds %d bytes", MaxResponseSize)
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -190,15 +233,79 @@ func (c *Client) SigningKey(ctx context.Context, scope sigv4.Scope) (sigv4.Key, 
 	if err = json.Unmarshal(raw, &out); err != nil {
 		return sigv4.Key{}, fmt.Errorf("keysource: decode the response: %w", err)
 	}
+	if out.Version < Version {
+		return sigv4.Key{}, &Error{
+			Status: resp.StatusCode, Code: CodeVersionUnsupported,
+			Message: fmt.Sprintf("the endpoint answered at version %d, which reports no "+
+				"policies; this client needs version %d or later (identity v0.2.0)",
+				out.Version, Version),
+		}
+	}
 	return sigv4.Key{
-		Principal: sigv4.Principal(out.Principal),
-		Signing:   out.SigningKey,
+		Principal: sigv4.Principal{
+			AccountID:   out.Principal.AccountID,
+			ARN:         out.Principal.ARN,
+			AccessKeyID: out.Principal.AccessKeyID,
+			Policies:    out.Principal.Policies,
+			Root:        out.Principal.Root,
+		},
+		Signing: out.SigningKey,
 	}, nil
 }
 
-// maxResponseSize bounds what is read of a response: a signing key, a
-// principal and their JSON need well under a kilobyte.
-const maxResponseSize = 64 << 10
+// CodeVersionUnsupported is the Code of the *Error SigningKey returns for an
+// identity that answers below Version.
+const CodeVersionUnsupported = "VersionUnsupported"
+
+// The bounds of a principal's policies on the wire, from the IAM quotas
+// (the IAM User Guide, IAM and STS quotas) and the IAM model. Each document
+// is at most maxDocumentChars characters, white space included
+// (policyDocumentType); white space is not counted against the size quotas
+// below, and inside a string it is kept. An entity may have any number of
+// inline policies within its aggregate size ("You can add as many inline
+// policies as you want"), and the smallest identity policy has
+// minPolicyChars characters without white space, so a role has at most
+// 10,240/59 of them. The endpoint writes documents as JSON with <, > and &
+// escaped, six bytes each, so a counted character takes at most
+// escapedBytes.
+const (
+	maxDocumentChars = 131072
+	minPolicyChars   = 59 // {"Statement":{"Effect":"Deny","Action":"*","Resource":"*"}}
+	escapedBytes     = 6
+
+	roleInlineChars  = 10240
+	roleManaged      = 20
+	managedChars     = 6144
+	userInlineChars  = 2048
+	userManaged      = 10
+	responseOverhead = 64 << 10
+
+	// roleInlineBytes is the most a role's inline policies take: as many as
+	// fit, each of maxDocumentChars, with every counted character escaped.
+	roleInlineBytes = roleInlineChars/minPolicyChars*maxDocumentChars +
+		(escapedBytes-1)*roleInlineChars
+	// roleManagedBytes is the most its attached managed policies take.
+	roleManagedBytes = roleManaged * (maxDocumentChars + (escapedBytes-1)*managedChars)
+	// userPolicyBytes is a user's equivalent, which is less.
+	userPolicyBytes = userInlineChars/minPolicyChars*maxDocumentChars +
+		(escapedBytes-1)*userInlineChars +
+		userManaged*(maxDocumentChars+(escapedBytes-1)*managedChars)
+
+	// maxPolicyBytes, about 24.8 MiB, is a role's, and so a session's.
+	maxPolicyBytes = roleInlineBytes + roleManagedBytes
+)
+
+// MaxResponseSize bounds what the client reads of a response: a signing
+// key and a principal with its policies, at most maxPolicyBytes and a
+// little, with a quarter more as margin, rounded to 32 MiB. A larger
+// response is refused with an error that says so.
+const MaxResponseSize = 32 << 20
+
+// The bound covers the largest set of policies identity can hold.
+var _ = [MaxResponseSize - (maxPolicyBytes + maxPolicyBytes/4 + responseOverhead)]struct{}{}
+
+// A user's policies fit within a role's.
+var _ = [maxPolicyBytes - userPolicyBytes]struct{}{}
 
 func decodeError(status int, raw []byte) error {
 	var e ErrorResponse

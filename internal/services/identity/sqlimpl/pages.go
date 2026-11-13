@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"strconv"
+	"strings"
 
 	"tule.dev/identity/internal/contracts"
 )
@@ -18,7 +19,8 @@ import (
 //
 // Only the hash is carried for the scope, so a marker stays short whatever
 // the scope: markerType allows 320 characters, and the longest cursor is a
-// user name, 64 ASCII characters, which with the hash encodes to 104.
+// managed policy's name and ID, 128 and 21 ASCII characters and a
+// separator, which with the hash encodes to 216.
 const markerHashSize = 12
 
 // The listings a marker can belong to.
@@ -26,7 +28,28 @@ const (
 	listUsers = "users"
 	listKeys  = "access-keys"
 	listTags  = "user-tags"
+
+	listPolicies       = "policies"
+	listPolicyVersions = "policy-versions"
+	listAttached       = "attached-policies"
+	listInline         = "inline-policies"
+	listRoles          = "roles"
 )
+
+// cursorSeparator joins the parts of a cursor made of two: a name and an ID,
+// neither of which can contain it.
+const cursorSeparator = "\x00"
+
+func joinCursor(name, id string) string {
+	return name + cursorSeparator + id
+}
+
+// splitCursor splits a cursor joinCursor made; an empty one splits into
+// empty parts.
+func splitCursor(cursor string) (name, id string) {
+	name, id, _ = strings.Cut(cursor, cursorSeparator)
+	return name, id
+}
 
 func markerHash(accountID, list, scope string) []byte {
 	h := sha256.New()

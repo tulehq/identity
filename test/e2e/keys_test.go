@@ -260,8 +260,8 @@ func TestUserKeySignsRequests(t *testing.T) {
 }
 
 func TestUserKeyIsDeniedIAM(t *testing.T) {
-	// The spec: until policies exist only admin principals may call IAM; any
-	// other principal gets AccessDenied.
+	// The design: an identity-issued principal is evaluated on every request,
+	// and one no policy allows gets AccessDenied. This user has no policy.
 	srv, c := rootIAM(t)
 	key := userWithKey(t, c, "plain")
 	uc := iamFor(srv, key)
@@ -293,13 +293,17 @@ func TestUserKeyIsDeniedIAM(t *testing.T) {
 		&iam.GetUserInput{UserName: aws.String("sneaky")})))
 	requireEqual(t, len(listKeys(t, c, "plain")), 1, "key count")
 
-	// Every active principal may still call STS.
-	t.Run("GetAccessKeyInfo is allowed", func(t *testing.T) {
-		out, err := stsFor(srv, key).GetAccessKeyInfo(t.Context(), &sts.GetAccessKeyInfoInput{
+	// sts:GetAccessKeyInfo is an action like any other (service
+	// authorization reference); only GetCallerIdentity needs no permission.
+	t.Run("GetAccessKeyInfo is denied", func(t *testing.T) {
+		err := errOf(stsFor(srv, key).GetAccessKeyInfo(t.Context(), &sts.GetAccessKeyInfoInput{
 			AccessKeyId: aws.String(key.AccessKeyID),
-		})
-		requireNoErr(t, err, "get access key info")
-		requireEqual(t, aws.ToString(out.Account), defaultAccountID, "Account")
+		}))
+		requireCode(t, err, codeAccessDenied)
+	})
+	t.Run("GetCallerIdentity is allowed", func(t *testing.T) {
+		_, err := callerIdentity(t, srv, key)
+		requireNoErr(t, err, "get caller identity")
 	})
 }
 

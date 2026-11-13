@@ -1,7 +1,8 @@
 // Package signingkey serves the signing-key endpoint the other Tule services
 // verify requests through: given the scope of a request's credential, it
 // answers with the derived signing key for that scope and the principal the
-// key belongs to. It is not an AWS API; tule.dev/identity/keysource is its
+// key belongs to: at version 2, with whether it is the root user and the
+// identity policies in effect for it. It is not an AWS API; tule.dev/identity/keysource is its
 // client and holds its wire types.
 //
 // The app verifies every call to it against the root user's key alone,
@@ -57,7 +58,9 @@ func (m *Module) Close(context.Context) error {
 }
 
 // signingKey answers with the signing key of the scope in the body, and
-// records the key's use with the scope's service and region. The use is
+// records the key's use with the scope's service and region. A request at
+// keysource.Version or later is answered at keysource.Version, with the
+// principal's Root and Policies; an earlier one, as v0.1.0 answered it. The use is
 // recorded when the key is handed out: the caller checks the signature
 // after, so a request it then refuses is recorded too.
 func (m *Module) signingKey(ctx gas.Context) error {
@@ -71,17 +74,27 @@ func (m *Module) signingKey(ctx gas.Context) error {
 			"AccessKeyId, Date, Region and Service are required.")
 	}
 
-	key, err := m.store.SigningKey(ctx, sigv4.Scope(req))
+	key, err := m.store.SigningKey(ctx, req.Scope())
 	if err != nil {
 		return writeKeyError(ctx, err)
 	}
 	if err = m.store.RecordKeyUse(ctx, req.AccessKeyID, req.Service, req.Region); err != nil {
 		return writeKeyError(ctx, err)
 	}
-	return write(ctx, http.StatusOK, keysource.Response{
-		Principal:  keysource.Principal(key.Principal),
+	out := keysource.Response{
+		Principal: keysource.Principal{
+			AccountID:   key.Principal.AccountID,
+			ARN:         key.Principal.ARN,
+			AccessKeyID: key.Principal.AccessKeyID,
+		},
 		SigningKey: key.Signing,
-	})
+	}
+	if req.Version >= keysource.Version {
+		out.Version = keysource.Version
+		out.Principal.Root = key.Principal.Root
+		out.Principal.Policies = key.Principal.Policies
+	}
+	return write(ctx, http.StatusOK, out)
 }
 
 // writeKeyError answers a lookup that found no key with the code the client

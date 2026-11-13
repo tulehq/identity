@@ -28,7 +28,7 @@ func (m *Module) tagUser(ctx gas.Context, c *call) error {
 		return queryapi.ErrValidation("1 validation error detected: Value null at 'tags' " +
 			"failed to satisfy constraint: Member must not be null")
 	}
-	if err = authorize(c, userResource(c.caller.AccountID, name)); err != nil {
+	if err = m.authorize(ctx, c); err != nil {
 		return err
 	}
 
@@ -47,7 +47,7 @@ func (m *Module) untagUser(ctx gas.Context, c *call) error {
 	if err != nil {
 		return err
 	}
-	if err = authorize(c, userResource(c.caller.AccountID, name)); err != nil {
+	if err = m.authorize(ctx, c); err != nil {
 		return err
 	}
 
@@ -66,7 +66,7 @@ func (m *Module) listUserTags(ctx gas.Context, c *call) error {
 	if err != nil {
 		return err
 	}
-	if err = authorize(c, userResource(c.caller.AccountID, name)); err != nil {
+	if err = m.authorize(ctx, c); err != nil {
 		return err
 	}
 
