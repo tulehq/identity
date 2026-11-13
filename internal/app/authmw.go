@@ -14,6 +14,7 @@ import (
 	"tule.dev/identity/internal/modules/signingkey"
 	"tule.dev/identity/internal/queryapi"
 	"tule.dev/identity/keysource"
+	"tule.dev/identity/servicerole"
 )
 
 // verifySignature returns the middleware that rejects requests whose SigV4
@@ -21,9 +22,9 @@ import (
 //
 // The IAM and STS API is verified against the store, which knows the root
 // user's key, the users' keys and the role sessions'; each verified request
-// records its key's use, for GetAccessKeyLastUsed. The signing-key endpoint
-// is verified against the root user's key alone, signed for
-// keysource.SigningName, before it reads its body.
+// records its key's use, for GetAccessKeyLastUsed. The internal endpoints,
+// signing-key and assume-role, are verified against the root user's key
+// alone, signed for keysource.SigningName, before they read their bodies.
 //
 // The health probes are exempt, so a container's health check needs no
 // credentials; nothing else is, because any web page the developer has open
@@ -42,7 +43,7 @@ func verifySignature(auth *authSettings) (func(http.Handler) http.Handler, error
 	}
 	internal, err := sigv4.New(root, sigv4.WithService(keysource.SigningName))
 	if err != nil {
-		return nil, fmt.Errorf("failed to create the signing-key endpoint verifier: %w", err)
+		return nil, fmt.Errorf("failed to create the internal endpoints' verifier: %w", err)
 	}
 
 	return func(next http.Handler) http.Handler {
@@ -50,7 +51,7 @@ func verifySignature(auth *authSettings) (func(http.Handler) http.Handler, error
 			switch {
 			case isProbe(r.URL.Path):
 				next.ServeHTTP(w, r)
-			case r.URL.Path == keysource.Path:
+			case r.URL.Path == keysource.Path || r.URL.Path == servicerole.Path:
 				verified, vErr := internal.Verify(r)
 				if vErr != nil {
 					signingkey.WriteHTTPError(w, r, vErr)
