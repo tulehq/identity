@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gasmod/gas"
@@ -513,4 +514,18 @@ func (m *Module) principalTags(ctx gas.Context, p *contracts.Principal) ([]contr
 		return r.Tags, nil
 	}
 	return nil, nil
+}
+
+// callerID is the unique ID a trust binding must have to name the caller: a
+// user's ID, or a role session's role's. Other callers match no binding.
+func callerID(p *contracts.Principal) string {
+	switch p.Kind {
+	case contracts.PrincipalUser:
+		return p.UserID
+	case contracts.PrincipalRoleSession:
+		id, _, _ := strings.Cut(p.UserID, ":")
+		return id
+	default:
+		return ""
+	}
 }

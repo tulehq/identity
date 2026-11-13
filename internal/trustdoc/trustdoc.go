@@ -1,19 +1,17 @@
-package query
+// Package trustdoc rewrites the principals of a role's trust policy: to bind
+// them to unique IDs as IAM does, and to show them as IAM shows them once a
+// principal is gone. Only the values of Statement[].Principal.AWS change;
+// every other member is kept as it was written, in its order.
+package trustdoc
 
 import (
 	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 
 	"tule.dev/identity/internal/contracts"
 )
-
-// A trust policy's AWS principals are rewritten in place: when a binding no
-// longer names the caller, for AssumeRole, and when its principal is gone,
-// for GetRole and ListRoles. Only the values of Statement[].Principal.AWS
-// change; every other member is kept as it was written, in its order.
 
 // member is one member of a JSON object, its value as it was written.
 type member struct {
@@ -73,13 +71,13 @@ func marshalString(v any) ([]byte, error) {
 	return bytes.TrimRight(b.Bytes(), "\n"), nil
 }
 
-// rewritePrincipals returns doc with each AWS principal value replaced by
+// RewritePrincipals returns doc with each AWS principal value replaced by
 // fn's answer for it, and whether any changed. doc is a trust policy that
 // parsed.
-func rewritePrincipals(doc string, fn func(string) string) (string, bool, error) {
+func RewritePrincipals(doc string, fn func(string) string) (string, bool, error) {
 	top, err := decodeObject([]byte(doc))
 	if err != nil {
-		return "", false, fmt.Errorf("query: read the trust policy: %w", err)
+		return "", false, fmt.Errorf("trustdoc: read the trust policy: %w", err)
 	}
 	changed := false
 	for i, m := range top {
@@ -130,7 +128,7 @@ func asBytes(list []json.RawMessage) [][]byte {
 func rewriteStatement(raw json.RawMessage, fn func(string) string) (json.RawMessage, bool, error) {
 	st, err := decodeObject(raw)
 	if err != nil {
-		return nil, false, fmt.Errorf("query: read a trust policy statement: %w", err)
+		return nil, false, fmt.Errorf("trustdoc: read a trust policy statement: %w", err)
 	}
 	changed := false
 	for i, m := range st {
@@ -158,7 +156,7 @@ func rewritePrincipal(raw json.RawMessage, fn func(string) string) (json.RawMess
 	}
 	byType, err := decodeObject(raw)
 	if err != nil {
-		return nil, false, fmt.Errorf("query: read a trust policy principal: %w", err)
+		return nil, false, fmt.Errorf("trustdoc: read a trust policy principal: %w", err)
 	}
 	changed := false
 	for i, t := range byType {
@@ -190,7 +188,7 @@ func rewriteValues(raw json.RawMessage, fn func(string) string) (json.RawMessage
 	}
 	var many []string
 	if err := json.Unmarshal(raw, &many); err != nil {
-		return nil, false, fmt.Errorf("query: read an AWS principal: %w", err)
+		return nil, false, fmt.Errorf("trustdoc: read an AWS principal: %w", err)
 	}
 	changed := false
 	for i, v := range many {
@@ -205,12 +203,12 @@ func rewriteValues(raw json.RawMessage, fn func(string) string) (json.RawMessage
 	return v, true, err
 }
 
-// bindablePrincipals returns the user and role ARNs a trust policy names, the
+// BindablePrincipals returns the user and role ARNs a trust policy names, the
 // principals IAM binds to unique IDs.
-func bindablePrincipals(doc string) ([]string, error) {
+func BindablePrincipals(doc string) ([]string, error) {
 	var out []string
 	seen := map[string]bool{}
-	_, _, err := rewritePrincipals(doc, func(v string) string {
+	_, _, err := RewritePrincipals(doc, func(v string) string {
 		if contracts.IsBindable(v) && !seen[v] {
 			seen[v] = true
 			out = append(out, v)
@@ -233,14 +231,14 @@ func namesNobody(arn, id string) string {
 	return "arn:aws:iam::" + account + ":unbound/" + id
 }
 
-// trustFor returns the role's trust policy as AssumeRole evaluates it for a
+// ForCaller returns the role's trust policy as AssumeRole evaluates it for a
 // caller whose unique ID is callerID: each user and role ARN names the
 // caller only while its binding is the caller's ID, and otherwise names
 // nobody. IAM matches a Principal by the unique ID it was bound to when the
 // policy was saved, so a user or role created again with the ARN is not
 // trusted.
-func trustFor(role *contracts.Role, callerID string) (string, error) {
-	doc, _, err := rewritePrincipals(role.TrustPolicy, func(v string) string {
+func ForCaller(role *contracts.Role, callerID string) (string, error) {
+	doc, _, err := RewritePrincipals(role.TrustPolicy, func(v string) string {
 		if !contracts.IsBindable(v) {
 			return v
 		}
@@ -256,11 +254,11 @@ func trustFor(role *contracts.Role, callerID string) (string, error) {
 	return doc, err
 }
 
-// shownTrust returns the role's trust policy as GetRole and ListRoles show
+// Shown returns the role's trust policy as GetRole and ListRoles show
 // it: as saved, with the ARN of a principal no longer there replaced by the
 // unique ID it was bound to, as IAM shows it once it "can no longer map it
 // back to a valid ARN" ("AWS JSON policy elements: Principal").
-func shownTrust(role *contracts.Role) (string, error) {
+func Shown(role *contracts.Role) (string, error) {
 	stale := false
 	for _, b := range role.TrustBindings {
 		stale = stale || !b.Current
@@ -268,25 +266,11 @@ func shownTrust(role *contracts.Role) (string, error) {
 	if !stale {
 		return role.TrustPolicy, nil
 	}
-	doc, _, err := rewritePrincipals(role.TrustPolicy, func(v string) string {
+	doc, _, err := RewritePrincipals(role.TrustPolicy, func(v string) string {
 		if b := role.BindingFor(v); b != nil && !b.Current {
 			return b.PrincipalID
 		}
 		return v
 	})
 	return doc, err
-}
-
-// callerID is the unique ID a trust binding must have to name the caller: a
-// user's ID, or a role session's role's. Other callers match no binding.
-func callerID(p *contracts.Principal) string {
-	switch p.Kind {
-	case contracts.PrincipalUser:
-		return p.UserID
-	case contracts.PrincipalRoleSession:
-		id, _, _ := strings.Cut(p.UserID, ":")
-		return id
-	default:
-		return ""
-	}
 }
