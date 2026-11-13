@@ -88,3 +88,57 @@ func TestForCallerBindsPrincipalsToTheCaller(t *testing.T) {
 		t.Errorf("the rewritten trust policy does not parse: %v", err)
 	}
 }
+
+// mixedUser is the user mixedRole's trust policy names.
+const mixedUser = "arn:aws:iam::123456789012:user/a"
+
+// mixedRole has a trust policy that names a user and two services; the
+// user's binding is stale.
+func mixedRole() *contracts.Role {
+	return &contracts.Role{
+		TrustPolicy: `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":` +
+			`{"Service":"lambda.amazonaws.com","AWS":"` + mixedUser + `"},"Action":"sts:AssumeRole"},` +
+			`{"Effect":"Allow","Principal":{"Service":["ecs-tasks.amazonaws.com"]},` +
+			`"Action":"sts:AssumeRole"}]}`,
+		TrustBindings: []contracts.TrustBinding{{ARN: mixedUser, PrincipalID: "AIDAOLD"}},
+	}
+}
+
+// requireServicesKept fails unless doc has the user rewritten and the
+// services as they were.
+func requireServicesKept(t *testing.T, doc string) {
+	t.Helper()
+	if strings.Contains(doc, `"`+mixedUser+`"`) ||
+		!strings.Contains(doc, `"Service":"lambda.amazonaws.com"`) ||
+		!strings.Contains(doc, `{"Service":["ecs-tasks.amazonaws.com"]}`) {
+		t.Fatalf("got %s; want the user rewritten and the services kept", doc)
+	}
+}
+
+func TestForCallerLeavesServicesAlone(t *testing.T) {
+	got, err := ForCaller(mixedRole(), "")
+	if err != nil {
+		t.Fatalf("for caller: %v", err)
+	}
+	requireServicesKept(t, got)
+	p, err := policy.ParseTrust([]byte(got))
+	if err != nil {
+		t.Fatalf("the rewritten policy does not parse: %v", err)
+	}
+	if policy.TrustMatch(p, "123456789012", "sts:AssumeRole", "lambda.amazonaws.com",
+		nil).Decision != policy.Allow {
+		t.Error("the rewritten policy no longer trusts lambda")
+	}
+}
+
+func TestShownLeavesServicesAlone(t *testing.T) {
+	got, err := Shown(mixedRole())
+	if err != nil {
+		t.Fatalf("shown: %v", err)
+	}
+	requireServicesKept(t, got)
+	if bound, bErr := BindablePrincipals(mixedRole().TrustPolicy); bErr != nil ||
+		len(bound) != 1 || bound[0] != mixedUser {
+		t.Errorf("bindable = %v, %v; want only the user", bound, bErr)
+	}
+}

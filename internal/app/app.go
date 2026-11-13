@@ -16,6 +16,7 @@ import (
 	"tule.dev/identity/internal/httpx"
 	"tule.dev/identity/internal/modules/health"
 	"tule.dev/identity/internal/modules/query"
+	serviceroles "tule.dev/identity/internal/modules/servicerole"
 	"tule.dev/identity/internal/modules/signingkey"
 	"tule.dev/identity/internal/services/identity/sqlimpl"
 	"tule.dev/identity/internal/services/organization/sdkimpl"
@@ -100,6 +101,7 @@ func databaseConfig(store *sqlimpl.Settings) *database.Config {
 func registerAppModules(app *gas.App) {
 	app.RegisterSingletonService[*query.Module](query.NewModule)
 	app.RegisterSingletonService[*signingkey.Module](signingkey.NewModule)
+	app.RegisterSingletonService[*serviceroles.Module](serviceroles.NewModule)
 	app.RegisterSingletonService[*health.Module](health.NewModule)
 }
 
