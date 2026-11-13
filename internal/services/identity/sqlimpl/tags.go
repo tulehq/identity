@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"tule.dev/identity/internal/contracts"
 )
@@ -17,7 +18,10 @@ func scanTag(r scanner) (cursored[contracts.Tag], error) {
 }
 
 // putTags sets tags on the IAM user, replacing the tag with the same key without
-// regard to case, key and value both, as IAM replaces it.
+// regard to case, key and value both, as IAM replaces it. Case is folded as
+// strings.EqualFold folds it, Unicode simple folding, beyond the ASCII the
+// tables' COLLATE NOCASE folds: IAM documents its tag keys as not case
+// sensitive without limiting that to ASCII.
 func putTags(ctx context.Context, tx *sql.Tx, userID string, tags []contracts.Tag) error {
 	return putTagsOn(ctx, tx, userTags, userID, tags)
 }
@@ -36,7 +40,9 @@ var (
 	policyTags = tagTable{table: "policy_tags", column: "policy_id"}
 )
 
-// putTagsOn sets tags on the resource with the ID, as putTags does.
+// putTagsOn sets tags on the resource with the ID, as putTags does: a tag
+// whose key equals a stored key or an earlier one in tags, by
+// strings.EqualFold, replaces it.
 func putTagsOn(
 	ctx context.Context,
 	tx *sql.Tx,
@@ -44,16 +50,49 @@ func putTagsOn(
 	id string,
 	tags []contracts.Tag,
 ) error {
+	stored, err := tagsOf(ctx, tx, tt, id)
+	if err != nil {
+		return err
+	}
 	for _, t := range tags {
-		if err := exec(ctx, tx,
-			`INSERT INTO `+tt.table+` (`+tt.column+`, key, value) VALUES (?, ?, ?)
-			 ON CONFLICT (`+tt.column+`, key) DO UPDATE
-			 SET key = excluded.key, value = excluded.value`,
+		if stored, err = deleteFolded(ctx, tx, tt, id, stored, t.Key); err != nil {
+			return err
+		}
+		if err = exec(ctx, tx,
+			`INSERT INTO `+tt.table+` (`+tt.column+`, key, value) VALUES (?, ?, ?)`,
 			id, t.Key, t.Value); err != nil {
 			return err
 		}
+		stored = append(stored, t)
 	}
 	return nil
+}
+
+// deleteFolded deletes the tags of the resource whose keys equal key by
+// strings.EqualFold, and returns stored, the resource's tags, without them.
+// There is one at most, but for keys stored before keys were folded beyond
+// ASCII, which may hold Ä and ä both.
+func deleteFolded(
+	ctx context.Context,
+	tx *sql.Tx,
+	tt tagTable,
+	id string,
+	stored []contracts.Tag,
+	key string,
+) ([]contracts.Tag, error) {
+	kept := stored[:0]
+	for _, s := range stored {
+		if !strings.EqualFold(s.Key, key) {
+			kept = append(kept, s)
+			continue
+		}
+		if err := exec(ctx, tx,
+			`DELETE FROM `+tt.table+` WHERE `+tt.column+` = ? AND key = ?`,
+			id, s.Key); err != nil {
+			return nil, err
+		}
+	}
+	return kept, nil
 }
 
 // tagsOf reads the tags of the resource with the ID in order of their keys,
@@ -100,7 +139,8 @@ func (s *Service) TagUser(
 	})
 }
 
-// UntagUser removes the tags with the keys from the IAM user.
+// UntagUser removes the tags with the keys from the IAM user, compared by
+// strings.EqualFold, as putTags compares them.
 func (s *Service) UntagUser(
 	ctx context.Context,
 	accountID, userName string,
@@ -111,9 +151,12 @@ func (s *Service) UntagUser(
 		if err != nil {
 			return err
 		}
+		stored, err := tagsOf(ctx, tx, userTags, u.ID)
+		if err != nil {
+			return err
+		}
 		for _, k := range keys {
-			if err = exec(ctx, tx,
-				`DELETE FROM user_tags WHERE user_id = ? AND key = ?`, u.ID, k); err != nil {
+			if stored, err = deleteFolded(ctx, tx, userTags, u.ID, stored, k); err != nil {
 				return err
 			}
 		}
