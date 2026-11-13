@@ -12,6 +12,7 @@ import (
 	"tule.dev/identity/internal/contracts"
 	"tule.dev/identity/internal/httpx"
 	"tule.dev/identity/internal/queryapi"
+	"tule.dev/identity/internal/trustdoc"
 )
 
 func (m *Module) getCallerIdentity(ctx gas.Context, c *call) error {
@@ -289,7 +290,7 @@ func (m *Module) assumableRole(
 		return nil, none, denied
 	}
 
-	doc, err := trustFor(role, callerID(c.caller))
+	doc, err := trustdoc.ForCaller(role, callerID(c.caller))
 	if err != nil {
 		return nil, none, err
 	}

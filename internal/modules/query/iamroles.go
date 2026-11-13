@@ -7,6 +7,7 @@ import (
 
 	"tule.dev/identity/internal/contracts"
 	"tule.dev/identity/internal/queryapi"
+	"tule.dev/identity/internal/trustdoc"
 )
 
 // errNoSuchRole is the NoSuchEntity of a role name no role has.
@@ -37,14 +38,14 @@ func trustPolicy(c *call, field string) (doc string, principals []string, err er
 		"ACLSizePerRole"); err != nil {
 		return "", nil, err
 	}
-	principals, err = bindablePrincipals(doc)
+	principals, err = trustdoc.BindablePrincipals(doc)
 	return doc, principals, err
 }
 
-// wireRole is a role on the wire, its trust policy as shownTrust shows it;
+// wireRole is a role on the wire, its trust policy as trustdoc.Shown shows it;
 // tags are reported when full and the role has some.
 func wireRole(r *contracts.Role, full bool) (queryapi.Role, error) {
-	trust, err := shownTrust(r)
+	trust, err := trustdoc.Shown(r)
 	if err != nil {
 		return queryapi.Role{}, err
 	}
