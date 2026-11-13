@@ -293,7 +293,7 @@ func TestTagsOfUnknownUser(t *testing.T) {
 }
 
 func TestUserKeyCannotTag(t *testing.T) {
-	// The spec's admin rule covers every IAM operation.
+	// With no policy allowing it, TagUser is denied like every IAM operation.
 	srv, c := rootIAM(t)
 	key := userWithKey(t, c, "plain")
 	tagUser(t, c, "plain", tag("seed", "1"))

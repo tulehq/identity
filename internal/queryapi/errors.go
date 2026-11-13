@@ -43,6 +43,7 @@ const (
 	CodeLimitExceeded       = "LimitExceeded"
 	CodeInvalidInput        = "InvalidInput"
 	CodeServiceFailure      = "ServiceFailure"
+	CodeMalformedPolicy     = "MalformedPolicyDocument"
 
 	CodeAccessDenied          = "AccessDenied"
 	CodeValidation            = "ValidationError"
@@ -76,11 +77,48 @@ func ErrInvalidParameterValue(msg string) *Error {
 
 // ErrAccessDenied is the AccessDenied a principal gets for an action it may
 // not perform, in the form of AWS's messages: "User: <arn> is not authorized
-// to perform: <action> on resource: <resource>".
+// to perform: <action> on resource: <resource>". It is the answer to an
+// AssumeRole whose role does not exist or does not trust the caller.
 func ErrAccessDenied(callerARN, action, resource string) *Error {
 	return NewError(http.StatusForbidden, CodeAccessDenied, fmt.Sprintf(
 		"User: %s is not authorized to perform: %s on resource: %s",
 		callerARN, action, resource))
+}
+
+// ErrNotAllowed is the AccessDenied of a request no identity-based policy
+// allows, in the form of AWS's messages.
+func ErrNotAllowed(callerARN, action, resource string) *Error {
+	e := ErrAccessDenied(callerARN, action, resource)
+	e.Message += " because no identity-based policy allows the " + action + " action"
+	return e
+}
+
+// ErrExplicitlyDenied is the AccessDenied of a request an identity-based
+// policy denies, in the form of AWS's messages.
+func ErrExplicitlyDenied(callerARN, action, resource string) *Error {
+	e := ErrAccessDenied(callerARN, action, resource)
+	e.Message += " with an explicit deny in an identity-based policy"
+	return e
+}
+
+// ErrMalformedPolicy is IAM's MalformedPolicyDocument.
+func ErrMalformedPolicy(msg string) *Error {
+	return NewError(http.StatusBadRequest, CodeMalformedPolicy, msg)
+}
+
+// ErrLimitExceeded is IAM's LimitExceeded.
+func ErrLimitExceeded(msg string) *Error {
+	return NewError(http.StatusConflict, CodeLimitExceeded, msg)
+}
+
+// ErrNoSuchEntity is IAM's NoSuchEntity.
+func ErrNoSuchEntity(msg string) *Error {
+	return NewError(http.StatusNotFound, CodeNoSuchEntity, msg)
+}
+
+// ErrEntityAlreadyExists is IAM's EntityAlreadyExists.
+func ErrEntityAlreadyExists(msg string) *Error {
+	return NewError(http.StatusConflict, CodeEntityAlreadyExists, msg)
 }
 
 // ErrNoSuchUser is the NoSuchEntity of a user name no user has.
@@ -140,6 +178,22 @@ var sentinelErrors = []struct {
 }{
 	{contracts.ErrDeleteConflict, NewError(http.StatusConflict, CodeDeleteConflict,
 		"Cannot delete entity, must delete access keys first.")},
+	{contracts.ErrHasAttachedPolicies, NewError(http.StatusConflict, CodeDeleteConflict,
+		"Cannot delete entity, must detach all policies first.")},
+	{contracts.ErrHasInlinePolicies, NewError(http.StatusConflict, CodeDeleteConflict,
+		"Cannot delete entity, must delete policies first.")},
+	{contracts.ErrPolicyAttached, NewError(http.StatusConflict, CodeDeleteConflict,
+		"Cannot delete a policy attached to entities.")},
+	{contracts.ErrPolicyHasVersions, NewError(http.StatusConflict, CodeDeleteConflict,
+		"This policy has more than one version. Before you delete a policy, you must "+
+			"delete the policy's versions. The default version is deleted with the policy.")},
+	{contracts.ErrDefaultPolicyVersion, NewError(http.StatusConflict, CodeDeleteConflict,
+		"Cannot delete the default version of a policy.")},
+	{contracts.ErrPolicyVersionLimitExceeded, NewError(http.StatusConflict, CodeLimitExceeded,
+		fmt.Sprintf("A managed policy can have up to %d versions. Before you create a new "+
+			"version, you must delete an existing version.", contracts.MaxPolicyVersions))},
+	{contracts.ErrAWSManagedPolicy, ErrInvalidInput(
+		"AWS managed policies can only be changed by AWS.")},
 	{contracts.ErrAccessKeyLimitExceeded, NewError(http.StatusConflict, CodeLimitExceeded,
 		fmt.Sprintf("Cannot exceed quota for AccessKeysPerUser: %d",
 			contracts.MaxAccessKeysPerUser))},

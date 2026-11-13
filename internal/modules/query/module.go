@@ -6,6 +6,7 @@ package query
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/gasmod/gas"
@@ -25,12 +26,18 @@ type Module struct {
 	handlers map[*queryapi.Service]map[string]handler
 }
 
-// call is one request to an operation: its parameters and who signed it.
+// call is one request to an operation: its parameters, who signed it, as
+// the store knows the principal and as the verifier reports it with its
+// policies, and the region it was signed for. authorized is set once the
+// call is authorized.
 type call struct {
-	params queryapi.Params
-	caller *contracts.Principal
-	svc    *queryapi.Service
-	op     string
+	params     queryapi.Params
+	caller     *contracts.Principal
+	svc        *queryapi.Service
+	op         string
+	region     string
+	signer     sigv4.Principal
+	authorized bool
 }
 
 // handler serves one operation. Returning an error leaves the response to the
@@ -60,6 +67,38 @@ func NewModule(
 			"TagUser":              m.tagUser,
 			"UntagUser":            m.untagUser,
 			"ListUserTags":         m.listUserTags,
+
+			"CreatePolicy":            m.createPolicy,
+			"GetPolicy":               m.getPolicy,
+			"ListPolicies":            m.listPolicies,
+			"DeletePolicy":            m.deletePolicy,
+			"CreatePolicyVersion":     m.createPolicyVersion,
+			"GetPolicyVersion":        m.getPolicyVersion,
+			"ListPolicyVersions":      m.listPolicyVersions,
+			"DeletePolicyVersion":     m.deletePolicyVersion,
+			"SetDefaultPolicyVersion": m.setDefaultPolicyVersion,
+
+			"AttachUserPolicy":         m.attachPolicy(contracts.EntityUser),
+			"DetachUserPolicy":         m.detachPolicy(contracts.EntityUser),
+			"ListAttachedUserPolicies": m.listAttachedPolicies(contracts.EntityUser),
+			"PutUserPolicy":            m.putInlinePolicy(contracts.EntityUser),
+			"GetUserPolicy":            m.getInlinePolicy(contracts.EntityUser),
+			"ListUserPolicies":         m.listInlinePolicies(contracts.EntityUser),
+			"DeleteUserPolicy":         m.deleteInlinePolicy(contracts.EntityUser),
+
+			"CreateRole":               m.createRole,
+			"GetRole":                  m.getRole,
+			"ListRoles":                m.listRoles,
+			"UpdateRole":               m.updateRole,
+			"UpdateAssumeRolePolicy":   m.updateAssumeRolePolicy,
+			"DeleteRole":               m.deleteRole,
+			"AttachRolePolicy":         m.attachPolicy(contracts.EntityRole),
+			"DetachRolePolicy":         m.detachPolicy(contracts.EntityRole),
+			"ListAttachedRolePolicies": m.listAttachedPolicies(contracts.EntityRole),
+			"PutRolePolicy":            m.putInlinePolicy(contracts.EntityRole),
+			"GetRolePolicy":            m.getInlinePolicy(contracts.EntityRole),
+			"ListRolePolicies":         m.listInlinePolicies(contracts.EntityRole),
+			"DeleteRolePolicy":         m.deleteInlinePolicy(contracts.EntityRole),
 		},
 		queryapi.STS: {
 			"GetCallerIdentity": m.getCallerIdentity,
@@ -113,33 +152,46 @@ func (m *Module) dispatch(ctx gas.Context) error {
 		return queryapi.WriteError(ctx, svc, queryapi.ErrInvalidAction(op, version))
 	}
 
-	caller, err := m.callerOf(ctx)
-	if err != nil {
+	c := &call{params: params, svc: svc, op: op}
+	if err := m.identify(ctx, c); err != nil {
 		return queryapi.WriteError(ctx, svc, err)
 	}
-	if err = h(ctx, &call{params: params, caller: caller, svc: svc, op: op}); err != nil {
+	if err := h(ctx, c); err != nil {
 		return queryapi.WriteError(ctx, svc, err)
 	}
 	return nil
 }
 
-// callerOf returns the principal that signed the request. The signature has
-// verified, so the key is one the store knows; a key deleted since is
-// refused as AWS refuses an unknown one.
-func (m *Module) callerOf(ctx gas.Context) (*contracts.Principal, error) {
-	p, ok := sigv4.PrincipalFrom(ctx.Request().Context())
+// identify sets who signed the call's request, and the region it was signed
+// for. The signature has verified, so the key is one the store knows; a key
+// deleted since is refused as AWS refuses an unknown one.
+func (m *Module) identify(ctx gas.Context, c *call) error {
+	rctx := ctx.Request().Context()
+	p, ok := sigv4.PrincipalFrom(rctx)
 	if !ok {
-		return nil, errors.New("query: the request carries no verified principal")
+		return errors.New("query: the request carries no verified principal")
 	}
 	caller, err := m.store.Principal(ctx, p.AccessKeyID)
 	if errors.Is(err, contracts.ErrAccessKeyNotFound) {
-		return nil, queryapi.NewError(http.StatusForbidden, queryapi.CodeInvalidClientTokenID,
+		return queryapi.NewError(http.StatusForbidden, queryapi.CodeInvalidClientTokenID,
 			"The security token included in the request is invalid.")
 	}
-	return caller, err
+	if err != nil {
+		return err
+	}
+	if scope, ok := sigv4.ScopeFrom(rctx); ok {
+		c.region = scope.Region
+	}
+	c.caller, c.signer = caller, p
+	return nil
 }
 
-// write sends result as the call's result.
+// write sends result as the call's result, once the call is authorized. A
+// handler that reaches it without authorizing the call is a bug, refused
+// rather than answered.
 func write(ctx gas.Context, c *call, result any) error {
+	if !c.authorized {
+		return fmt.Errorf("query: %s answered without being authorized", c.op)
+	}
 	return queryapi.Write(ctx, c.svc, c.op, result)
 }

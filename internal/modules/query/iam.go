@@ -9,22 +9,6 @@ import (
 	"tule.dev/identity/internal/queryapi"
 )
 
-// authorize lets an admin principal through and refuses anyone else with
-// AccessDenied for action on resource. With no policies, the admins are the
-// root user and role sessions, each in its own account.
-func authorize(c *call, resource string) error {
-	if c.caller.Kind == contracts.PrincipalUser {
-		return queryapi.ErrAccessDenied(c.caller.ARN, "iam:"+c.op, resource)
-	}
-	return nil
-}
-
-// userResource is the ARN of the IAM user an operation names, as AccessDenied
-// names it: with the default path, since the request carries none.
-func userResource(accountID, name string) string {
-	return "arn:aws:iam::" + accountID + ":user/" + name
-}
-
 // target is whom an operation with an optional UserName acts on: the named
 // IAM user, or, when the request names none, the caller.
 type target struct {
@@ -32,14 +16,6 @@ type target struct {
 	// root is set when the request names no user and the caller is the root
 	// user, which the operation then acts on itself.
 	root bool
-}
-
-// resource is the ARN AccessDenied names for the target.
-func (t target) resource(c *call) string {
-	if t.root {
-		return c.caller.ARN
-	}
-	return userResource(c.caller.AccountID, t.name)
 }
 
 // requestedUser reads the optional UserName of GetUser, ListUserTags and the
@@ -118,7 +94,7 @@ func (m *Module) createUser(ctx gas.Context, c *call) error {
 			"This service does not support PermissionsBoundary on users.")
 	}
 	account := c.caller.AccountID
-	if err = authorize(c, "arn:aws:iam::"+account+":user"+path+name); err != nil {
+	if err = m.authorize(ctx, c); err != nil {
 		return err
 	}
 
@@ -136,7 +112,7 @@ func (m *Module) getUser(ctx gas.Context, c *call) error {
 	if err != nil {
 		return err
 	}
-	if err = authorize(c, t.resource(c)); err != nil {
+	if err = m.authorize(ctx, c); err != nil {
 		return err
 	}
 
@@ -172,7 +148,7 @@ func (m *Module) listUsers(ctx gas.Context, c *call) error {
 	if err != nil {
 		return err
 	}
-	if err = authorize(c, userResource(c.caller.AccountID, "")); err != nil {
+	if err = m.authorize(ctx, c); err != nil {
 		return err
 	}
 
@@ -201,7 +177,7 @@ func (m *Module) deleteUser(ctx gas.Context, c *call) error {
 	if err != nil {
 		return err
 	}
-	if err = authorize(c, userResource(c.caller.AccountID, name)); err != nil {
+	if err = m.authorize(ctx, c); err != nil {
 		return err
 	}
 

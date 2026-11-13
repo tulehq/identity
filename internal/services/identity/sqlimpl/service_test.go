@@ -368,14 +368,27 @@ func TestSigningKeys(t *testing.T) {
 	requireErr(t, err, sigv4.ErrUnknownAccessKey)
 }
 
+// organizationRole is OrganizationAccountAccessRole of the member account.
+func organizationRole(t *testing.T, s *Service) *contracts.Role {
+	t.Helper()
+	ctx := context.Background()
+	r, err := s.CreateOrganizationRole(ctx, member, management)
+	if errors.Is(err, contracts.ErrOrganizationRoleCreated) {
+		r, err = s.GetRole(ctx, member, contracts.OrganizationRoleName)
+	}
+	requireNoErr(t, err, "the organization role")
+	return r
+}
+
 func TestRoleSessions(t *testing.T) {
 	ctx := context.Background()
 	s := newStore(t)
 	at := time.Date(2026, 11, 13, 10, 0, 0, 0, time.UTC)
 	s.now = func() time.Time { return at }
+	role := organizationRole(t, s)
 
 	rs, err := s.CreateRoleSession(ctx, contracts.CreateRoleSessionInput{
-		AccountID: member, SessionName: "e2e", Duration: 15 * time.Minute,
+		Role: role, SessionName: "e2e", Duration: 15 * time.Minute,
 	})
 	requireNoErr(t, err, "create role session")
 	check(
@@ -390,9 +403,9 @@ func TestRoleSessions(t *testing.T) {
 		rs,
 	)
 
-	// The role's ID is the account's, the same in every session.
+	// The role's ID is the role's, the same in every session.
 	again, err := s.CreateRoleSession(ctx, contracts.CreateRoleSessionInput{
-		AccountID: member, SessionName: "e2e", Duration: time.Hour,
+		Role: role, SessionName: "e2e", Duration: time.Hour,
 	})
 	requireNoErr(t, err, "create second session")
 	check(
@@ -435,10 +448,11 @@ func TestARoleSessionExpires(t *testing.T) {
 	s := newStore(t)
 	at := time.Date(2026, 11, 13, 10, 0, 0, 0, time.UTC)
 	s.now = func() time.Time { return at }
+	role := organizationRole(t, s)
 	var sessions [2]*contracts.RoleSession
 	for i := range sessions {
 		rs, err := s.CreateRoleSession(ctx, contracts.CreateRoleSessionInput{
-			AccountID: member, SessionName: "e2e", Duration: 15 * time.Minute,
+			Role: role, SessionName: "e2e", Duration: 15 * time.Minute,
 		})
 		requireNoErr(t, err, "create role session")
 		sessions[i] = rs

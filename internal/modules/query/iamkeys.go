@@ -12,7 +12,7 @@ func (m *Module) createAccessKey(ctx gas.Context, c *call) error {
 	if err != nil {
 		return err
 	}
-	if err = authorize(c, t.resource(c)); err != nil {
+	if err = m.authorize(ctx, c); err != nil {
 		return err
 	}
 	if t.root {
@@ -41,7 +41,7 @@ func (m *Module) listAccessKeys(ctx gas.Context, c *call) error {
 	if err != nil {
 		return err
 	}
-	if err = authorize(c, t.resource(c)); err != nil {
+	if err = m.authorize(ctx, c); err != nil {
 		return err
 	}
 
@@ -113,7 +113,7 @@ func (m *Module) updateAccessKey(ctx gas.Context, c *call) error {
 	if err != nil {
 		return err
 	}
-	if err = authorize(c, t.resource(c)); err != nil {
+	if err = m.authorize(ctx, c); err != nil {
 		return err
 	}
 	if t.root {
@@ -135,7 +135,7 @@ func (m *Module) deleteAccessKey(ctx gas.Context, c *call) error {
 	if err != nil {
 		return err
 	}
-	if err = authorize(c, t.resource(c)); err != nil {
+	if err = m.authorize(ctx, c); err != nil {
 		return err
 	}
 	if t.root {
@@ -157,7 +157,7 @@ func (m *Module) getAccessKeyLastUsed(ctx gas.Context, c *call) error {
 	if err != nil {
 		return err
 	}
-	if err = authorize(c, c.caller.ARN); err != nil {
+	if err = m.authorize(ctx, c); err != nil {
 		return err
 	}
 

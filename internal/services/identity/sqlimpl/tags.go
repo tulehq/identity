@@ -19,15 +19,56 @@ func scanTag(r scanner) (cursored[contracts.Tag], error) {
 // putTags sets tags on the IAM user, replacing the tag with the same key without
 // regard to case, key and value both, as IAM replaces it.
 func putTags(ctx context.Context, tx *sql.Tx, userID string, tags []contracts.Tag) error {
+	return putTagsOn(ctx, tx, userTags, userID, tags)
+}
+
+// tagTable is a table of tags on one kind of IAM resource, and the column
+// naming the resource.
+type tagTable struct {
+	table  string
+	column string
+}
+
+// The tag tables.
+var (
+	userTags   = tagTable{table: "user_tags", column: "user_id"}
+	roleTags   = tagTable{table: "role_tags", column: "role_id"}
+	policyTags = tagTable{table: "policy_tags", column: "policy_id"}
+)
+
+// putTagsOn sets tags on the resource with the ID, as putTags does.
+func putTagsOn(
+	ctx context.Context,
+	tx *sql.Tx,
+	tt tagTable,
+	id string,
+	tags []contracts.Tag,
+) error {
 	for _, t := range tags {
 		if err := exec(ctx, tx,
-			`INSERT INTO user_tags (user_id, key, value) VALUES (?, ?, ?)
-			 ON CONFLICT (user_id, key) DO UPDATE SET key = excluded.key, value = excluded.value`,
-			userID, t.Key, t.Value); err != nil {
+			`INSERT INTO `+tt.table+` (`+tt.column+`, key, value) VALUES (?, ?, ?)
+			 ON CONFLICT (`+tt.column+`, key) DO UPDATE
+			 SET key = excluded.key, value = excluded.value`,
+			id, t.Key, t.Value); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// tagsOf reads the tags of the resource with the ID in order of their keys,
+// or nil for none.
+func tagsOf(ctx context.Context, tx *sql.Tx, tt tagTable, id string) ([]contracts.Tag, error) {
+	rows, err := queryAll(ctx, tx, scanTag,
+		`SELECT key, value FROM `+tt.table+` WHERE `+tt.column+` = ? ORDER BY key`, id)
+	if err != nil {
+		return nil, err
+	}
+	var out []contracts.Tag
+	for _, r := range rows {
+		out = append(out, r.item)
+	}
+	return out, nil
 }
 
 // TagUser sets tags on the IAM user, failing with contracts.ErrTagLimitExceeded,

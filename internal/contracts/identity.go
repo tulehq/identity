@@ -26,6 +26,74 @@ var (
 	// keys.
 	ErrDeleteConflict = errors.New("identity: user has access keys")
 
+	// ErrHasAttachedPolicies is returned by DeleteUser and DeleteRole while
+	// the entity has managed policies attached.
+	ErrHasAttachedPolicies = errors.New("identity: entity has attached policies")
+
+	// ErrHasInlinePolicies is returned by DeleteUser and DeleteRole while the
+	// entity has inline policies.
+	ErrHasInlinePolicies = errors.New("identity: entity has inline policies")
+
+	// ErrOrganizationRoleCreated is returned by CreateOrganizationRole for a
+	// member account OrganizationRoleName was created in before.
+	ErrOrganizationRoleCreated = errors.New("identity: the organization role was created before")
+
+	// ErrRoleNotFound is returned when no role of the account has the name,
+	// compared without regard to case.
+	ErrRoleNotFound = errors.New("identity: role not found")
+
+	// ErrRoleExists is returned by CreateRole when a role of the account has
+	// the name already, compared without regard to case.
+	ErrRoleExists = errors.New("identity: role already exists")
+
+	// ErrPolicyNotFound is returned when no managed policy the account can
+	// see has the ARN.
+	ErrPolicyNotFound = errors.New("identity: policy not found")
+
+	// ErrPolicyExists is returned by CreatePolicy when a managed policy of
+	// the account has the name already.
+	ErrPolicyExists = errors.New("identity: policy already exists")
+
+	// ErrPolicyVersionNotFound is returned when the managed policy has no
+	// version with the ID.
+	ErrPolicyVersionNotFound = errors.New("identity: policy version not found")
+
+	// ErrPolicyAttached is returned by DeletePolicy while the policy is
+	// attached to a user or role.
+	ErrPolicyAttached = errors.New("identity: policy is attached")
+
+	// ErrPolicyHasVersions is returned by DeletePolicy while the policy has
+	// versions other than its default one.
+	ErrPolicyHasVersions = errors.New("identity: policy has non-default versions")
+
+	// ErrDefaultPolicyVersion is returned by DeletePolicyVersion for the
+	// policy's default version.
+	ErrDefaultPolicyVersion = errors.New("identity: cannot delete the default version")
+
+	// ErrPolicyVersionLimitExceeded is returned by CreatePolicyVersion when
+	// the policy has MaxPolicyVersions versions already.
+	ErrPolicyVersionLimitExceeded = errors.New("identity: policy version limit exceeded")
+
+	// ErrAttachedPolicyLimitExceeded is returned by AttachPolicy when the
+	// entity has its kind's quota of managed policies attached already.
+	ErrAttachedPolicyLimitExceeded = errors.New("identity: attached policy limit exceeded")
+
+	// ErrInlinePolicySizeExceeded is returned by PutInlinePolicy when the
+	// entity's inline policies would exceed its kind's aggregate size.
+	ErrInlinePolicySizeExceeded = errors.New("identity: inline policy size exceeded")
+
+	// ErrInlinePolicyNotFound is returned when the entity has no inline
+	// policy with the name.
+	ErrInlinePolicyNotFound = errors.New("identity: inline policy not found")
+
+	// ErrPolicyNotAttached is returned by DetachPolicy for a policy the
+	// entity does not have attached.
+	ErrPolicyNotAttached = errors.New("identity: policy not attached")
+
+	// ErrAWSManagedPolicy is returned for a change to an AWS managed policy,
+	// which only AWS can change.
+	ErrAWSManagedPolicy = errors.New("identity: AWS managed policies cannot be changed")
+
 	// ErrAccessKeyNotFound is returned when no access key the operation may
 	// act on has the ID.
 	ErrAccessKeyNotFound = errors.New("identity: access key not found")
@@ -70,9 +138,31 @@ const (
 	StatusInactive = "Inactive"
 )
 
-// OrganizationRoleName is the one role a principal can assume: the role
-// Organizations creates in each account it creates, under its default name.
+// OrganizationRoleName is the role Organizations creates in each account it
+// creates, under its default name. Identity creates it in a member account
+// the first time the management account assumes it there.
 const OrganizationRoleName = "OrganizationAccountAccessRole"
+
+// AdministratorAccessARN is the AWS managed policy every account can attach
+// that allows every action on every resource. OrganizationRoleName has it
+// attached.
+const AdministratorAccessARN = "arn:aws:iam::aws:policy/AdministratorAccess"
+
+// AWSAccount is the account part of an AWS managed policy's ARN.
+const AWSAccount = "aws"
+
+// The IAM quotas this service applies (the IAM User Guide, IAM and STS
+// quotas, at their default values). Policy sizes count characters, white
+// space excluded.
+const (
+	MaxPolicyVersions         = 5
+	MaxManagedPoliciesPerUser = 10
+	MaxManagedPoliciesPerRole = 20
+	MaxManagedPolicySize      = 6144
+	MaxUserInlinePolicySize   = 2048
+	MaxRoleInlinePolicySize   = 10240
+	MaxRoleTrustPolicySize    = 2048
+)
 
 // The role session durations, in seconds. AssumeRole takes 900 to 43200 by
 // its model, and no more than the role's maximum session duration, which is
@@ -133,21 +223,38 @@ const (
 	PrincipalRoot PrincipalKind = iota + 1
 	// PrincipalUser is an IAM user.
 	PrincipalUser
-	// PrincipalRoleSession is a session of OrganizationRoleName.
+	// PrincipalRoleSession is a session of a role.
 	PrincipalRoleSession
 )
 
 // Principal is who an access key belongs to. UserID is the aws:userid of the
 // principal: the account ID for the root user, the IAM user's ID for a user,
 // and the role ID and session name for a role session. UserName is the
-// user's name, for a user.
+// user's name, for a user. RoleARN is the ARN of a role session's role, its
+// aws:PrincipalArn, with the role's path.
+//
+// A session is bound to its role's unique ID, as AWS binds a role to its ID
+// rather than its name. Orphaned marks a session whose role no longer
+// exists, though another role may since have taken its name: it has no
+// role, so no RoleARN and no policies.
 type Principal struct {
 	AccountID   string
 	ARN         string
 	UserID      string
 	UserName    string
+	RoleARN     string
 	AccessKeyID string
 	Kind        PrincipalKind
+	Orphaned    bool
+}
+
+// PrincipalARN is the aws:PrincipalArn of p: a role session's role, empty
+// for an orphaned session, or the ARN p signs as.
+func (p *Principal) PrincipalARN() string {
+	if p.Kind == PrincipalRoleSession {
+		return p.RoleARN
+	}
+	return p.ARN
 }
 
 // Page is one page of a listing. Marker resumes the listing after it, and is
@@ -184,10 +291,9 @@ type ListUserTagsInput struct {
 	MaxItems  int
 }
 
-// CreateRoleSessionInput describes a session of OrganizationRoleName in an
-// account.
+// CreateRoleSessionInput describes a session of a role.
 type CreateRoleSessionInput struct {
-	AccountID   string
+	Role        *Role
 	SessionName string
 	Duration    time.Duration
 }
@@ -241,6 +347,83 @@ type IdentityProvider interface {
 	RecordKeyUse(ctx context.Context, keyID, service, region string) error
 
 	CreateRoleSession(ctx context.Context, in CreateRoleSessionInput) (*RoleSession, error)
+
+	// CreatePolicy creates a customer managed policy, failing with
+	// ErrPolicyExists when the account has one with the name.
+	CreatePolicy(ctx context.Context, in CreatePolicyInput) (*ManagedPolicy, error)
+	// GetPolicy returns the managed policy with the ARN, with its tags: the
+	// account's own, or an AWS managed one.
+	GetPolicy(ctx context.Context, accountID, arn string) (*ManagedPolicy, error)
+	ListPolicies(ctx context.Context, in ListPoliciesInput) (*Page[ManagedPolicy], error)
+	// DeletePolicy deletes a customer managed policy, failing with
+	// ErrPolicyAttached while it is attached and ErrPolicyHasVersions while
+	// it has versions besides its default.
+	DeletePolicy(ctx context.Context, accountID, arn string) error
+	// CreatePolicyVersion adds a version to a customer managed policy,
+	// failing with ErrPolicyVersionLimitExceeded when it has
+	// MaxPolicyVersions already.
+	CreatePolicyVersion(
+		ctx context.Context, accountID, arn, document string, setAsDefault bool,
+	) (*PolicyVersion, error)
+	GetPolicyVersion(ctx context.Context, accountID, arn, versionID string) (*PolicyVersion, error)
+	ListPolicyVersions(
+		ctx context.Context, in ListPolicyVersionsInput,
+	) (*Page[PolicyVersion], error)
+	// DeletePolicyVersion deletes a version other than the default, which is
+	// ErrDefaultPolicyVersion.
+	DeletePolicyVersion(ctx context.Context, accountID, arn, versionID string) error
+	SetDefaultPolicyVersion(ctx context.Context, accountID, arn, versionID string) error
+
+	// AttachPolicy attaches a managed policy to the entity. Attaching one it
+	// has attached already changes nothing.
+	AttachPolicy(ctx context.Context, e Entity, arn string) error
+	DetachPolicy(ctx context.Context, e Entity, arn string) error
+	ListAttachedPolicies(
+		ctx context.Context, in ListAttachedPoliciesInput,
+	) (*Page[AttachedPolicy], error)
+	// PutInlinePolicy embeds the policy in the entity, replacing one of the
+	// same name.
+	PutInlinePolicy(ctx context.Context, e Entity, name, document string) error
+	GetInlinePolicy(ctx context.Context, e Entity, name string) (*InlinePolicy, error)
+	ListInlinePolicies(ctx context.Context, in ListInlinePoliciesInput) (*Page[string], error)
+	DeleteInlinePolicy(ctx context.Context, e Entity, name string) error
+
+	// CreateRole creates a role, binding the user and role ARNs its trust
+	// policy names to their unique IDs. One that no user or role has is an
+	// *InvalidPrincipalError.
+	CreateRole(ctx context.Context, in CreateRoleInput) (*Role, error)
+	// GetRole returns the role of the account with the name, compared
+	// without regard to case, with its tags.
+	GetRole(ctx context.Context, accountID, name string) (*Role, error)
+	ListRoles(ctx context.Context, in ListRolesInput) (*Page[Role], error)
+	UpdateRole(ctx context.Context, in UpdateRoleInput) error
+	// UpdateAssumeRolePolicy replaces the role's trust policy, binding the
+	// user and role ARNs it names, principals, to their unique IDs.
+	UpdateAssumeRolePolicy(
+		ctx context.Context, accountID, name, document string, principals []string,
+	) error
+	// DeleteRole deletes the role, failing with ErrHasAttachedPolicies or
+	// ErrHasInlinePolicies while it has policies.
+	DeleteRole(ctx context.Context, accountID, name string) error
+	// OrganizationRoleCreated reports whether OrganizationRoleName has been
+	// created in the member account, which happens once, the first time the
+	// management account assumes it there. A role the member account deleted
+	// since stays deleted.
+	OrganizationRoleCreated(ctx context.Context, accountID string) (bool, error)
+	// CreateOrganizationRole creates OrganizationRoleName in the member
+	// account, with AdministratorAccess attached and a trust policy for
+	// managementAccountID, and records that it was created. Once it has
+	// been, it creates nothing and returns ErrOrganizationRoleCreated.
+	CreateOrganizationRole(
+		ctx context.Context,
+		accountID, managementAccountID string,
+	) (*Role, error)
+
+	// EffectivePolicies returns the identity policy documents in effect for
+	// the principal the access key belongs to: a user's or a role session's
+	// role's inline policies and the default versions of its attached
+	// managed policies. The root user has none, as it is never evaluated.
+	EffectivePolicies(ctx context.Context, p *Principal) ([]string, error)
 
 	// Principal returns who an access key belongs to, whatever its status,
 	// or ErrAccessKeyNotFound.

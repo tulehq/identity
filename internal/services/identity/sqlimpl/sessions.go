@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -14,9 +15,9 @@ import (
 	"tule.dev/identity/internal/contracts"
 )
 
-// CreateRoleSession creates a session of contracts.OrganizationRoleName in
-// the account, valid for the duration from now, with new temporary
-// credentials.
+// CreateRoleSession creates a session of the role, valid for the duration
+// from now, with new temporary credentials. The session takes its
+// permissions from the role, as they are when each request is made.
 func (s *Service) CreateRoleSession(
 	ctx context.Context,
 	in contracts.CreateRoleSessionInput,
@@ -41,16 +42,17 @@ func (s *Service) CreateRoleSession(
 			AccessKeyID:     id,
 			SecretAccessKey: secret,
 			SessionToken:    token,
-			ARN:             assumedRoleARN(in.AccountID, in.SessionName),
-			AssumedRoleID:   roleID(in.AccountID) + ":" + in.SessionName,
+			ARN:             assumedRoleARN(in.Role.AccountID, in.Role.Name, in.SessionName),
+			AssumedRoleID:   in.Role.ID + ":" + in.SessionName,
 		}
 		if err = exec(ctx, tx,
 			`INSERT INTO role_sessions
 			 (access_key_id, account_id, session_name, secret, token_sha256, expires_at,
-			  created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			rs.AccessKeyID, in.AccountID, in.SessionName, rs.SecretAccessKey,
-			tokenHash(token), stamp(rs.Expiration), stamp(now)); err != nil {
+			  created_at, role_id, role_name)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			rs.AccessKeyID, in.Role.AccountID, in.SessionName, rs.SecretAccessKey,
+			tokenHash(token), stamp(rs.Expiration), stamp(now), in.Role.ID,
+			in.Role.Name); err != nil {
 			return err
 		}
 		out = &rs
@@ -107,11 +109,18 @@ func (s *Service) loadKey(ctx context.Context, tx *sql.Tx, keyID string) (*keyRe
 		return nil, fmt.Errorf("read access key: %w", err)
 	}
 
-	var sessionName string
+	// The role is found by the ID the session was created for, never by
+	// name: a role deleted since leaves the session orphaned, with no role
+	// ARN and no policies, even when another role has taken its name.
+	var sessionName, roleID, roleName string
+	var rolePath sql.NullString
 	err = tx.QueryRowContext(ctx,
-		`SELECT account_id, session_name, secret, token_sha256, expires_at
-		 FROM role_sessions WHERE access_key_id = ?`, keyID,
-	).Scan(&p.AccountID, &sessionName, &k.secret, &k.tokenHash, &k.expiresAt)
+		`SELECT s.account_id, s.session_name, s.secret, s.token_sha256, s.expires_at,
+		        s.role_id, s.role_name, r.path
+		 FROM role_sessions s LEFT JOIN roles r ON r.id = s.role_id
+		 WHERE s.access_key_id = ?`, keyID,
+	).Scan(&p.AccountID, &sessionName, &k.secret, &k.tokenHash, &k.expiresAt,
+		&roleID, &roleName, &rolePath)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return nil, contracts.ErrAccessKeyNotFound
@@ -119,8 +128,13 @@ func (s *Service) loadKey(ctx context.Context, tx *sql.Tx, keyID string) (*keyRe
 		return nil, fmt.Errorf("read role session: %w", err)
 	}
 	p.Kind = contracts.PrincipalRoleSession
-	p.ARN = assumedRoleARN(p.AccountID, sessionName)
-	p.UserID = roleID(p.AccountID) + ":" + sessionName
+	p.ARN = assumedRoleARN(p.AccountID, roleName, sessionName)
+	if rolePath.Valid {
+		p.RoleARN = contracts.RoleARN(p.AccountID, rolePath.String, roleName)
+	} else {
+		p.Orphaned = true
+	}
+	p.UserID = roleID + ":" + sessionName
 	k.status = contracts.StatusActive
 	return &k, nil
 }
@@ -142,7 +156,8 @@ func (s *Service) Principal(ctx context.Context, keyID string) (*contracts.Princ
 
 // SigningKey is the store as a sigv4.KeySource: the signing key for scope of
 // the root user's key, a user's Active key, or a role session's key with its
-// session token, until it expires.
+// session token, until it expires. Its principal is Root for the root user's
+// key, and carries the identity policies in effect for anyone else.
 //
 // Everything in scope but the access key ID is unauthenticated when it is
 // called, since the signature is checked after; so a failure reveals no more
@@ -153,10 +168,16 @@ func (s *Service) Principal(ctx context.Context, keyID string) (*contracts.Princ
 // an Inactive key is contracts.ErrInactiveAccessKey, which wraps
 // sigv4.ErrUnknownAccessKey.
 func (s *Service) SigningKey(ctx context.Context, scope sigv4.Scope) (sigv4.Key, error) {
-	var k *keyRecord
+	var (
+		k    *keyRecord
+		docs []string
+	)
 	err := s.inTx(ctx, func(tx *sql.Tx) error {
 		var lErr error
-		k, lErr = s.loadKey(ctx, tx, scope.AccessKeyID)
+		if k, lErr = s.loadKey(ctx, tx, scope.AccessKeyID); lErr != nil {
+			return lErr
+		}
+		docs, lErr = effectivePolicies(ctx, tx, &k.principal)
 		return lErr
 	})
 	switch {
@@ -169,9 +190,17 @@ func (s *Service) SigningKey(ctx context.Context, scope sigv4.Scope) (sigv4.Key,
 		return sigv4.Key{}, err
 	}
 	p := k.principal
+	var policies []json.RawMessage
+	for _, d := range docs {
+		policies = append(policies, json.RawMessage(d))
+	}
 	return sigv4.Key{
 		Principal: sigv4.Principal{
-			AccountID: p.AccountID, ARN: p.ARN, AccessKeyID: p.AccessKeyID,
+			AccountID:   p.AccountID,
+			ARN:         p.ARN,
+			AccessKeyID: p.AccessKeyID,
+			Policies:    policies,
+			Root:        p.Kind == contracts.PrincipalRoot,
 		},
 		Signing: sigv4.DeriveSigningKey(k.secret, scope.Date, scope.Region, scope.Service),
 	}, nil

@@ -278,7 +278,7 @@ func TestAnIAMActionSignedForSTSIsInvalid(t *testing.T) {
 	)
 
 	// An IAM operation this service leaves out.
-	_, err := iamClient(url, rootCreds()).ListRoles(ctx, &iam.ListRolesInput{})
+	_, err := iamClient(url, rootCreds()).ListGroups(ctx, &iam.ListGroupsInput{})
 	requireCode(t, err, "InvalidAction")
 }
 

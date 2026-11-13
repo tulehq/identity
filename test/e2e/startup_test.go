@@ -146,10 +146,6 @@ func TestOutOfScopeOperations(t *testing.T) {
 	srv := startServer(t, nil)
 	root := rootCreds()
 
-	t.Run("iam ListRoles", func(t *testing.T) {
-		err := errOf(iamFor(srv, root).ListRoles(t.Context(), &iam.ListRolesInput{}))
-		requireCode(t, err, codeInvalidAction)
-	})
 	t.Run("iam CreateGroup", func(t *testing.T) {
 		err := errOf(iamFor(srv, root).CreateGroup(t.Context(), &iam.CreateGroupInput{
 			GroupName: aws.String("g"),

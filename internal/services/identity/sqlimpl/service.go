@@ -100,12 +100,13 @@ func rootARN(accountID string) string {
 }
 
 func userARN(accountID, path, name string) string {
-	return "arn:aws:iam::" + accountID + ":user" + path + name
+	return contracts.UserARN(accountID, path, name)
 }
 
-func assumedRoleARN(accountID, sessionName string) string {
-	return "arn:aws:sts::" + accountID + ":assumed-role/" + contracts.OrganizationRoleName +
-		"/" + sessionName
+// assumedRoleARN is a role session's ARN, which names its role without the
+// role's path.
+func assumedRoleARN(accountID, roleName, sessionName string) string {
+	return "arn:aws:sts::" + accountID + ":assumed-role/" + roleName + "/" + sessionName
 }
 
 // scanner is a row to scan: an *sql.Rows positioned on a row, or an
