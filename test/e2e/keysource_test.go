@@ -228,6 +228,11 @@ func testKeySourceSession(t *testing.T, f orgFixture) {
 	p, _ := sigv4.PrincipalFrom(verified.Context())
 	requireEqual(t, p.ARN, aws.ToString(out.AssumedRoleUser.Arn), "principal ARN")
 	requireEqual(t, p.AccountID, f.member, "principal AccountID")
+	// A session in a member account names its role there.
+	requireEqual(t, p.PrincipalARN, roleARN(f.member), "principal PrincipalARN")
+	requireMatch(t, sessionUserIDPattern("verified"), p.UserID, "principal UserID")
+	requireEqual(t, p.UserID, aws.ToString(out.AssumedRoleUser.AssumedRoleId), "principal UserID")
+	requireEqual(t, p.Type, sigv4.PrincipalTypeAssumedRole, "principal Type")
 
 	_, err = v.Verify(signedRequest(t, withToken(sess, tamper(sess.SessionToken))))
 	requireKind(t, err, sigv4.KindInvalidSessionToken)

@@ -12,10 +12,13 @@
 //
 // The endpoint is versioned by the request. A request with no Version, as a
 // v0.1.0 client sends it, is answered as v0.1.0 answered it: the principal's
-// account, ARN and access key ID. A request with Version 2 or later is also
-// told whether the principal is its account's root user and the identity
-// policies in effect for it, and the response carries the Version it was
-// answered at, so a client can tell an identity too old to report policies.
+// account, ARN and access key ID. A request with Version 2 is also told
+// whether the principal is its account's root user and the identity
+// policies in effect for it. A request with Version 3 or later is also told
+// the values of the principal's condition keys: aws:PrincipalArn,
+// aws:userid, aws:PrincipalType and aws:PrincipalTag. The response carries
+// the Version it was answered at, so a client can tell an identity too old
+// to report what it needs.
 package keysource
 
 import (
@@ -39,9 +42,17 @@ const (
 	SigningRegion = rootcall.SigningRegion
 )
 
-// Version is the endpoint version this client asks for: the first to report
-// the principal's Root and Policies.
-const Version = 2
+// The endpoint versions.
+const (
+	// VersionPolicies is the first version to report the principal's Root
+	// and Policies.
+	VersionPolicies = 2
+	// VersionAttributes is the first to report its PrincipalArn, UserId,
+	// PrincipalType and Tags.
+	VersionAttributes = 3
+	// Version is the version this client asks for.
+	Version = VersionAttributes
+)
 
 // Request is the body of a call: the scope of the credential a request was
 // signed with, as sigv4.Scope holds it, and the endpoint version the caller
@@ -67,15 +78,30 @@ func (r *Request) Scope() sigv4.Scope {
 }
 
 // Principal is who a signing key belongs to. Root and Policies are only
-// reported at Version 2 or later: Root for the account's root user, which is
-// never evaluated against policies, and Policies for the identity policy
-// documents in effect for anyone else.
+// reported at VersionPolicies or later: Root for the account's root user,
+// which is never evaluated against policies, and Policies for the identity
+// policy documents in effect for anyone else.
+//
+// PrincipalARN, UserID, PrincipalType and Tags are only reported at
+// VersionAttributes or later, as the values of the principal's condition
+// keys; sigv4.Principal documents each. PrincipalARN is aws:PrincipalArn:
+// an IAM user's or the root user's ARN, and a role session's role ARN with
+// its path, empty for a session whose role is gone. UserID is aws:userid:
+// an IAM user's unique ID, <role ID>:<session name> for a role session, and
+// the account ID for the root user. PrincipalType is aws:PrincipalType:
+// User, AssumedRole or Account. Tags are the aws:PrincipalTag values: an
+// IAM user's tags, or a role session's role's, at most MaxTags of them, and
+// absent when there are none.
 type Principal struct {
-	AccountID   string            `json:"AccountId"`
-	ARN         string            `json:"Arn"`
-	AccessKeyID string            `json:"AccessKeyId"`
-	Policies    []json.RawMessage `json:"Policies,omitempty"`
-	Root        bool              `json:"Root,omitempty"`
+	Tags          map[string]string `json:"Tags,omitempty"`
+	AccountID     string            `json:"AccountId"`
+	ARN           string            `json:"Arn"`
+	PrincipalARN  string            `json:"PrincipalArn,omitempty"`
+	UserID        string            `json:"UserId,omitempty"`
+	AccessKeyID   string            `json:"AccessKeyId"`
+	PrincipalType string            `json:"PrincipalType,omitempty"`
+	Policies      []json.RawMessage `json:"Policies,omitempty"`
+	Root          bool              `json:"Root,omitempty"`
 }
 
 // Response is the body of a successful call. SigningKey is the derived key
@@ -157,7 +183,7 @@ func New(cfg Config) (*Client, error) {
 }
 
 // SigningKey asks identity for the signing key of scope, with the
-// principal's Root and Policies. It returns sigv4.ErrUnknownAccessKey,
+// principal's Root, Policies and condition key values. It returns sigv4.ErrUnknownAccessKey,
 // ErrInactiveAccessKey (which wraps it), sigv4.ErrInvalidSessionToken or
 // sigv4.ErrExpiredSessionToken when identity has no key for the scope, and
 // an *Error or a transport error otherwise, an identity that answers below
@@ -191,17 +217,21 @@ func (c *Client) SigningKey(ctx context.Context, scope sigv4.Scope) (sigv4.Key, 
 		return sigv4.Key{}, &Error{
 			Status: status, Code: CodeVersionUnsupported,
 			Message: fmt.Sprintf("the endpoint answered at version %d, which reports no "+
-				"policies; this client needs version %d or later (identity v0.2.0)",
+				"principal attributes; this client needs version %d or later",
 				out.Version, Version),
 		}
 	}
 	return sigv4.Key{
 		Principal: sigv4.Principal{
-			AccountID:   out.Principal.AccountID,
-			ARN:         out.Principal.ARN,
-			AccessKeyID: out.Principal.AccessKeyID,
-			Policies:    out.Principal.Policies,
-			Root:        out.Principal.Root,
+			Tags:         out.Principal.Tags,
+			AccountID:    out.Principal.AccountID,
+			ARN:          out.Principal.ARN,
+			PrincipalARN: out.Principal.PrincipalARN,
+			UserID:       out.Principal.UserID,
+			AccessKeyID:  out.Principal.AccessKeyID,
+			Type:         sigv4.PrincipalType(out.Principal.PrincipalType),
+			Policies:     out.Principal.Policies,
+			Root:         out.Principal.Root,
 		},
 		Signing: out.SigningKey,
 	}, nil
@@ -249,14 +279,40 @@ const (
 	maxPolicyBytes = roleInlineBytes + roleManagedBytes
 )
 
+// MaxTags is the most tags a principal is reported with: IAM's limit of 50
+// tags on a user or role (tagListType), which a role session takes from its
+// role, since it carries no session tags of its own.
+const MaxTags = 50
+
+// The bound of a principal's tags on the wire. A tag key is at most
+// maxTagKeyChars characters and a value maxTagValueChars (tagKeyType and
+// tagValueType); the endpoint writes each character in at most
+// escapedBytes, a \u escape, which covers U+2028 and U+2029 (\p{Z}, which
+// tags allow) and any character's UTF-8. A tag also takes its two quoted
+// strings' quotes, a colon and a comma, tagPunctuation. The session tags
+// AWS allows besides a role's tags (at most 50, in id_session-tags) would
+// at most double maxTagBytes, and that still fits the margin below.
+const (
+	maxTagKeyChars   = 128
+	maxTagValueChars = 256
+	tagPunctuation   = 6
+	maxTagBytes      = MaxTags *
+		((maxTagKeyChars+maxTagValueChars)*escapedBytes + tagPunctuation)
+)
+
 // MaxResponseSize bounds what the client reads of a response: a signing
-// key and a principal with its policies, at most maxPolicyBytes and a
-// little, with a quarter more as margin, rounded to 32 MiB. A larger
-// response is refused with an error that says so.
+// key and a principal with its policies and tags, at most maxPolicyBytes
+// and maxTagBytes and a little, with a quarter more as margin, rounded to
+// 32 MiB. A larger response is refused with an error that says so.
 const MaxResponseSize = 32 << 20
 
-// The bound covers the largest set of policies identity can hold.
-var _ = [MaxResponseSize - (maxPolicyBytes + maxPolicyBytes/4 + responseOverhead)]struct{}{}
+// The bound covers the largest set of policies and tags identity can hold.
+var _ = [MaxResponseSize - (maxPolicyBytes + maxPolicyBytes/4 + maxTagBytes +
+	responseOverhead)]struct{}{}
+
+// It would cover twice the tags too, were sessions to carry session tags.
+var _ = [MaxResponseSize - (maxPolicyBytes + maxPolicyBytes/4 + 2*maxTagBytes +
+	responseOverhead)]struct{}{}
 
 // A user's policies fit within a role's.
 var _ = [maxPolicyBytes - userPolicyBytes]struct{}{}

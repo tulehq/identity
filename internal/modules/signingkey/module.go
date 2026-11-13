@@ -2,8 +2,9 @@
 // verify requests through: given the scope of a request's credential, it
 // answers with the derived signing key for that scope and the principal the
 // key belongs to: at version 2, with whether it is the root user and the
-// identity policies in effect for it. It is not an AWS API; tule.dev/identity/keysource is its
-// client and holds its wire types.
+// identity policies in effect for it, and at version 3, with the values of
+// its condition keys too. It is not an AWS API; tule.dev/identity/keysource
+// is its client and holds its wire types.
 //
 // The app verifies every call to it against the root user's key alone,
 // before this module reads anything, so only a holder of that key can ask.
@@ -59,10 +60,12 @@ func (m *Module) Close(context.Context) error {
 
 // signingKey answers with the signing key of the scope in the body, and
 // records the key's use with the scope's service and region. A request at
-// keysource.Version or later is answered at keysource.Version, with the
-// principal's Root and Policies; an earlier one, as v0.1.0 answered it. The use is
-// recorded when the key is handed out: the caller checks the signature
-// after, so a request it then refuses is recorded too.
+// keysource.VersionAttributes or later is answered at that version, with
+// the principal's Root, Policies and condition key values; one at
+// keysource.VersionPolicies, at that version, with Root and Policies only;
+// an earlier one, as v0.1.0 answered it. The use is recorded when the key
+// is handed out: the caller checks the signature after, so a request it
+// then refuses is recorded too.
 func (m *Module) signingKey(ctx gas.Context) error {
 	var req keysource.Request
 	if err := json.NewDecoder(ctx.Request().Body).Decode(&req); err != nil {
@@ -89,10 +92,18 @@ func (m *Module) signingKey(ctx gas.Context) error {
 		},
 		SigningKey: key.Signing,
 	}
-	if req.Version >= keysource.Version {
-		out.Version = keysource.Version
-		out.Principal.Root = key.Principal.Root
-		out.Principal.Policies = key.Principal.Policies
+	p := key.Principal
+	if req.Version >= keysource.VersionPolicies {
+		out.Version = keysource.VersionPolicies
+		out.Principal.Root = p.Root
+		out.Principal.Policies = p.Policies
+	}
+	if req.Version >= keysource.VersionAttributes {
+		out.Version = keysource.VersionAttributes
+		out.Principal.PrincipalARN = p.PrincipalARN
+		out.Principal.UserID = p.UserID
+		out.Principal.PrincipalType = string(p.Type)
+		out.Principal.Tags = p.Tags
 	}
 	return write(ctx, http.StatusOK, out)
 }
