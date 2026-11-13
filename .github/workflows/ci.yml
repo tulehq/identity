@@ -28,10 +28,13 @@ jobs:
         run: make test
 
       # The cross-service end-to-end test builds and runs the accounts
-      # service from its source.
+      # service from its source. It runs against the released accounts, so
+      # a change on accounts' main cannot break this suite; the pin moves
+      # when accounts releases.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: tulehq/accounts
+          ref: v0.1.1
           path: accounts
 
       - name: End-to-end tests
