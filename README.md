@@ -10,7 +10,9 @@ decide who may do what.
 It also issues the keys the other Tule services verify. A service asks
 identity's [signing-key endpoint](#the-signing-key-endpoint) for the SigV4
 signing key of a request's credential and checks the signature itself, so a
-key created here works against every Tule service.
+key created here works against every Tule service. A service assumes a role
+as an AWS service, such as a function's execution role, through the
+[assume-role endpoint](#the-assume-role-endpoint).
 
 It is not a production identity service: secrets are stored as they are, and
 only identity-based policies and role trust policies are evaluated
@@ -387,6 +389,70 @@ the code `VersionUnsupported`, since it cannot say what the principal may do.
 It caches nothing: every verification asks
 identity, so a key deactivated or deleted is refused on the next request.
 
+## The assume-role endpoint
+
+An internal endpoint, not an AWS API, through which a Tule service assumes a
+role as an AWS service principal, as Lambda assumes a function's execution
+role. `AssumeRole` matches a trust policy against the caller's ARN, and no
+caller is a service, so a role that trusts
+`{"Service": "lambda.amazonaws.com"}` (the Lambda Developer Guide's execution
+role) is assumed through this endpoint instead. It is
+`POST /_internal/assume-role`.
+
+- **Authentication.** As the signing-key endpoint's: SigV4 with the root
+  user's key, for the signing name `identity` in `us-east-1`. Anything else
+  is refused, `403` with the sigv4 Kind as the code, before the body is read.
+- **Request.**
+
+  ```json
+  {"RoleArn": "arn:aws:iam::000000000000:role/fn-exec",
+   "RoleSessionName": "invocation", "ServicePrincipal": "lambda.amazonaws.com",
+   "DurationSeconds": 900}
+  ```
+
+  `ServicePrincipal` is a service principal, DNS labels ending in
+  `.amazonaws.com`. `RoleSessionName` follows `AssumeRole`'s rules.
+  `DurationSeconds` is 900 to 43200 and at most the role's
+  `MaxSessionDuration`, or left out for an hour.
+- **Evaluation.** The role's trust policy must allow the service principal
+  `sts:AssumeRole`, evaluated as `AssumeRole` evaluates it, with its user and
+  role principals bound to their unique IDs. Identity policies are not
+  evaluated, as a service principal has none. Role names are matched with
+  their case. Nothing about the role changes, and
+  `OrganizationAccountAccessRole` is never created here.
+- **Response.** `200` with an ordinary session of the role, which carries the
+  role's policies, as an `AssumeRole` session does:
+
+  ```json
+  {"Credentials": {"Expiration": "2026-11-13T10:15:00Z", "AccessKeyId": "ASIA...",
+                   "SecretAccessKey": "...", "SessionToken": "..."},
+   "AssumedRoleUser": {"AssumedRoleId": "AROA...:invocation",
+                       "Arn": "arn:aws:sts::000000000000:assumed-role/fn-exec/invocation"}}
+  ```
+
+- **Refusals.** `404` `NoSuchRole`, `403` `NotTrusted` (the trust policy does
+  not allow the service), `400` `InvalidDuration`, and `400` `InvalidRequest`
+  for a body that is not a request or a malformed field. A failure of the
+  store is `500`.
+
+### The service role client
+
+`tule.dev/identity/servicerole` is the endpoint's client:
+
+```go
+c, err := servicerole.New(servicerole.Config{
+	Endpoint:        "http://localhost:9030",
+	AccessKeyID:     rootKeyID,
+	SecretAccessKey: rootSecret,
+})
+s, err := c.AssumeServiceRole(ctx, roleARN, "invocation", "lambda.amazonaws.com",
+	15*time.Minute)
+```
+
+It returns `servicerole.ErrNoSuchRole`, `ErrNotTrusted` and
+`ErrInvalidDuration` for those refusals, and a `*servicerole.Error` or a
+transport error otherwise.
+
 ## Differences from AWS
 
 - **Identity policies and trust policies only.** Permissions boundaries,
@@ -422,8 +488,8 @@ identity, so a key deactivated or deleted is refused on the next request.
   policy". A user or role deleted and created again under the same ARN is
   another principal, which the trust policy does not name until it is saved
   again; `GetRole` and `ListRoles` then show the old unique ID in place of
-  the ARN. Account IDs, root ARNs, role session ARNs, `*` and condition keys
-  such as `aws:PrincipalArn` are not bound. The policy is otherwise returned
+  the ARN. Account IDs, root ARNs, role session ARNs, `*`, service principals
+  and condition keys such as `aws:PrincipalArn` are not bound. The policy is otherwise returned
   as it was saved; where an ID replaces an ARN, its white space is not kept.
   A trust policy that names a principal by its unique ID, as `GetRole` shows
   a deleted one, is refused on `UpdateAssumeRolePolicy` as an invalid
