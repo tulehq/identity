@@ -125,15 +125,14 @@ func IsServicePrincipal(s string) bool {
 // and an account is 12 digits (the IAM User Guide, IAM identifiers, ARNs).
 var sourceARN = regexp.MustCompile(`^arn:aws:[a-z0-9-]+:[a-z0-9-]*:(?:\d{12})?:.+$`)
 
-// The length bounds of an ARN, as IAM's arnType has them.
-const (
-	minARN = 20
-	maxARN = 2048
-)
+// maxARN is the longest ARN, as IAM's arnType bounds it. IAM's minimum of
+// 20 characters is not applied: it bounds IAM's own resource ARNs, and a
+// source ARN may be shorter, as a bucket's arn:aws:s3:::abc is.
+const maxARN = 2048
 
 // IsSourceArn reports whether s has the form of an ARN.
 func IsSourceArn(s string) bool {
-	return len(s) >= minARN && len(s) <= maxARN && sourceARN.MatchString(s)
+	return len(s) <= maxARN && sourceARN.MatchString(s)
 }
 
 var accountID = regexp.MustCompile(`^\d{12}$`)
