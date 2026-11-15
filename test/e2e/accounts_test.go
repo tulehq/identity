@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -119,6 +120,28 @@ func envWithoutTule() []string {
 		}
 	}
 	return env
+}
+
+// unreachableEndpoint returns an accounts endpoint whose connections are
+// refused: its port is held by a socket that is bound but never listens, so
+// no other process can take the port before the test is done with it, as one
+// could take a free port released after it was found. The socket is closed
+// when the test ends. A connection to port 0 is no substitute: on some
+// kernels it times out rather than being refused.
+func unreachableEndpoint(t *testing.T) string {
+	t.Helper()
+	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
+	requireNoErr(t, err, "open a socket for the unreachable endpoint")
+	t.Cleanup(func() { requireNoErr(t, syscall.Close(fd), "close the unreachable endpoint") })
+	requireNoErr(t, syscall.Bind(fd, &syscall.SockaddrInet4{Addr: [4]byte{127, 0, 0, 1}}),
+		"bind the unreachable endpoint")
+	sa, err := syscall.Getsockname(fd)
+	requireNoErr(t, err, "read the unreachable endpoint's address")
+	addr, ok := sa.(*syscall.SockaddrInet4)
+	if !ok {
+		t.Fatalf("unreachable endpoint bound to %T, want an IPv4 address", sa)
+	}
+	return "http://127.0.0.1:" + strconv.Itoa(addr.Port)
 }
 
 func freePort(t *testing.T) int {

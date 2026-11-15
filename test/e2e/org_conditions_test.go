@@ -3,7 +3,6 @@
 package e2e
 
 import (
-	"strconv"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -106,7 +105,7 @@ func TestARemovedAccountIsOutsideTheOrganization(t *testing.T) {
 // a Deny apply. Requests that do not test them are decided as usual.
 func TestUnknownOrganizationKeysFailClosed(t *testing.T) {
 	srv := startServer(t, map[string]string{
-		"TULE_Identity_AccountsEndpoint": "http://127.0.0.1:" + strconv.Itoa(freePort(t)),
+		"TULE_Identity_AccountsEndpoint": unreachableEndpoint(t),
 	})
 	root := iamFor(srv, rootCreds())
 	user := userWithPolicy(t, root, "dev", statements(
