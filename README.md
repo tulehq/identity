@@ -793,6 +793,13 @@ them by ARN, so a recreated user or role inherits what its ARN was granted.
   trusted, since nothing is expected in front of this service and the header
   is unsigned.
 
+## Upgrading from v0.5.1
+
+- **The `server started` log line is written once the port is bound,** and
+  carries the bound address, such as `[::]:9030` where v0.5.1 logged the
+  configured `:9030`, and a `tls` field, `false`. A port that cannot be
+  bound now fails startup without a `server started` line first.
+
 ## Upgrading from v0.4.1
 
 - **The signing-key endpoint** answers v0.4.1's and older clients as

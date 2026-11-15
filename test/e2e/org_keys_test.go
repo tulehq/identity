@@ -3,7 +3,6 @@
 package e2e
 
 import (
-	"strconv"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -143,7 +142,7 @@ func TestWithoutAnAccountsServiceThereIsNoOrganization(t *testing.T) {
 // absent, and every request still verifies.
 func TestUnreachableAccountsLeaveTheOrganizationUnknown(t *testing.T) {
 	srv := startServer(t, map[string]string{
-		"TULE_Identity_AccountsEndpoint": "http://127.0.0.1:" + strconv.Itoa(freePort(t)),
+		"TULE_Identity_AccountsEndpoint": unreachableEndpoint(t),
 	})
 	user := userWithKey(t, iamFor(srv, rootCreds()), "dev")
 	for _, creds := range []aws.Credentials{rootCreds(), user} {
